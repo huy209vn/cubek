@@ -1,12 +1,11 @@
 use cubecl::calculate_cube_count_elemwise;
+use cubecl::features::TypeUsage;
+use cubecl::ir::ElemType;
 use cubecl::prelude::*;
-use cubecl_core::ir::ElemType;
-use cubecl_core::tensor_line_size_parallel;
-use cubecl_core::{self as cubecl};
-use cubecl_runtime::TypeUsage;
-use cubecl_std::scalar::InputScalar;
-use cubecl_std::tensor::layout::linear::LinearView;
-use cubecl_std::tensor::{View, layout::linear::linear_view};
+use cubecl::std::scalar::InputScalar;
+use cubecl::std::tensor::layout::linear::LinearView;
+use cubecl::std::tensor::{View, layout::linear::linear_view};
+use cubecl::tensor_line_size_parallel;
 
 use crate::{
     layout::{ScalesLayout, scales_view},

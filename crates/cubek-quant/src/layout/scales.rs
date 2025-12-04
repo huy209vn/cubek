@@ -1,6 +1,5 @@
 use cubecl::prelude::*;
-use cubecl_core::{self as cubecl};
-use cubecl_std::{
+use cubecl::std::{
     FastDivmod, FastDivmodArgs,
     tensor::{
         launch::{TypedView, TypedViewLaunch},

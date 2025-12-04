@@ -13,9 +13,6 @@ pub mod layout;
 
 pub use cubecl_common::quant::scheme;
 
-#[cfg(feature = "export_tests")]
-pub mod tests;
-
 #[cfg(feature = "kernels")]
 pub(crate) mod utils {
     use crate::scheme::{QuantLevel, QuantScheme};

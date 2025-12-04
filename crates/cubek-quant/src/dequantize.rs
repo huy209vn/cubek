@@ -1,18 +1,18 @@
 #![allow(missing_docs)] // pub cube modules
 
+use cubecl::features::TypeUsage;
 use cubecl::prelude::*;
-use cubecl_core::{
-    self as cubecl, calculate_cube_count_elemwise,
+use cubecl::{
+    calculate_cube_count_elemwise,
     ir::{ElemType, FloatKind, IntKind},
     tensor_line_size_parallel,
 };
-use cubecl_runtime::TypeUsage;
 
 use crate::{
     layout::{ScalesView, scales_view},
     scheme::{QuantLevel, QuantMode, QuantScheme, QuantStore, QuantValue},
 };
-use cubecl_std::tensor::{
+use cubecl::std::tensor::{
     View,
     layout::linear::{LinearView, linear_view},
 };

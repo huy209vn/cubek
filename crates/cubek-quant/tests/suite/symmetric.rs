@@ -1,17 +1,29 @@
-use cubecl::prelude::*;
-use cubecl_core::Runtime;
-use cubecl_core::ir::{ElemType, FloatKind};
-use cubecl_core::server::CopyDescriptor;
-use cubecl_core::{self as cubecl, server::AllocationDescriptor};
-use cubecl_std::tensor::TensorHandle;
+use cubecl::TestRuntime;
+use cubecl::ir::ElemType;
+use cubecl::ir::FloatKind;
+use cubecl::server::AllocationDescriptor;
+use cubecl::server::CopyDescriptor;
+use cubecl::std::tensor::TensorHandle;
+use cubek_quant::scheme::QuantMode;
+use cubek_quant::scheme::QuantScheme;
+use cubek_quant::scheme::QuantStore;
+use cubek_quant::scheme::QuantValue;
 
-use alloc::{vec, vec::Vec};
+#[test]
+fn test_quantization_symmetric_tensor() {
+    test_quantization_tensor_symmetric(SHAPE_X, SHAPE_Y, VALUE);
+}
 
-use crate::scheme::{QuantLevel, QuantMode, QuantParam, QuantScheme, QuantStore, QuantValue};
+#[test]
+fn test_quantization_symmetric_block() {
+    test_quantization_block_symmetric(
+        SHAPE_X, SHAPE_Y, VALUE, SHAPE_X, // Shape x as block_size
+    );
+}
 
-pub fn test_quantization_tensor_symmetric<R: Runtime>(m: usize, n: usize, value: QuantValue) {
+fn test_quantization_tensor_symmetric(m: usize, n: usize, value: QuantValue) {
     let mode = QuantMode::Symmetric;
-    let client = R::client(&Default::default());
+    let client = TestRuntime::client(&Default::default());
     let shape = vec![m, n];
 
     let num_elems: usize = m * n;
@@ -59,12 +71,12 @@ pub fn test_quantization_tensor_symmetric<R: Runtime>(m: usize, n: usize, value:
     let [output_alloc, output_scale_alloc] = client
         .empty_tensors(vec![
             AllocationDescriptor {
-                kind: cubecl_core::server::AllocationKind::Contiguous,
+                kind: cubecl::server::AllocationKind::Contiguous,
                 shape: &shape_out,
                 elem_size: u32::type_size() as usize,
             },
             AllocationDescriptor {
-                kind: cubecl_core::server::AllocationKind::Contiguous,
+                kind: cubecl::server::AllocationKind::Contiguous,
                 shape: &[1],
                 elem_size: f32::type_size() as usize,
             },
@@ -84,7 +96,7 @@ pub fn test_quantization_tensor_symmetric<R: Runtime>(m: usize, n: usize, value:
         f32::as_type_native_unchecked(),
     );
 
-    crate::quantize::launch_ref(
+    cubek_quant::quantize::launch_ref(
         &client,
         &input.as_ref(),
         &output.as_ref(),
@@ -95,7 +107,7 @@ pub fn test_quantization_tensor_symmetric<R: Runtime>(m: usize, n: usize, value:
     )
     .unwrap();
 
-    crate::dequantize::launch_ref(
+    cubek_quant::dequantize::launch_ref(
         &client,
         // The input of the dequantize kernel is the output of the quantized one.
         &output.as_ref(),
@@ -128,14 +140,9 @@ pub fn test_quantization_tensor_symmetric<R: Runtime>(m: usize, n: usize, value:
     }
 }
 
-pub fn test_quantization_block_symmetric<R: Runtime>(
-    m: usize,
-    n: usize,
-    value: QuantValue,
-    block_size: usize,
-) {
+fn test_quantization_block_symmetric(m: usize, n: usize, value: QuantValue, block_size: usize) {
     let mode = QuantMode::Symmetric;
-    let client = R::client(&Default::default());
+    let client = TestRuntime::client(&Default::default());
     let shape = vec![m, n];
 
     let num_elems: usize = m * n;
@@ -205,12 +212,12 @@ pub fn test_quantization_block_symmetric<R: Runtime>(
     let [output_alloc, output_scale_alloc] = client
         .empty_tensors(vec![
             AllocationDescriptor {
-                kind: cubecl_core::server::AllocationKind::Contiguous,
+                kind: cubecl::server::AllocationKind::Contiguous,
                 shape: &shape_out,
                 elem_size: u32::type_size() as usize,
             },
             AllocationDescriptor {
-                kind: cubecl_core::server::AllocationKind::Contiguous,
+                kind: cubecl::server::AllocationKind::Contiguous,
                 shape: &shape_scale,
                 elem_size: f32::type_size() as usize,
             },
@@ -230,7 +237,7 @@ pub fn test_quantization_block_symmetric<R: Runtime>(
         f32::as_type_native_unchecked(),
     );
 
-    crate::quantize::launch_ref(
+    cubek_quant::quantize::launch_ref(
         &client,
         &input.as_ref(),
         &output.as_ref(),
@@ -241,7 +248,7 @@ pub fn test_quantization_block_symmetric<R: Runtime>(
     )
     .unwrap();
 
-    crate::dequantize::launch_ref(
+    cubek_quant::dequantize::launch_ref(
         &client,
         // The input of the dequantize kernel is the output of the quantized one.
         &output.as_ref(),
@@ -274,68 +281,4 @@ pub fn test_quantization_block_symmetric<R: Runtime>(
             "Mismatch at {i}, Expected: {expected} | Actual: {actual} (diff {diff} > {max_error})"
         );
     }
-}
-
-#[allow(missing_docs)]
-#[macro_export]
-macro_rules! testgen_quant {
-    ($value: expr, $shape_x: expr, $shape_y: expr) => {
-        #[test]
-        fn test_quantization_symmetric_tensor() {
-            $crate::tests::test_quantization_tensor_symmetric::<TestRuntime>(
-                $shape_x, $shape_y, $value,
-            );
-        }
-
-        #[test]
-        fn test_quantization_symmetric_block() {
-            $crate::tests::test_quantization_block_symmetric::<TestRuntime>(
-                $shape_x, $shape_y, $value, $shape_x, // Shape x as block_size
-            );
-        }
-    };
-    ($shape_x: expr, $shape_y: expr) => {
-        mod q8f {
-            use super::*;
-            cubecl_quant::testgen_quant!(QuantValue::Q8F, $shape_x, $shape_y);
-        }
-        mod q8s {
-            use super::*;
-            cubecl_quant::testgen_quant!(QuantValue::Q8S, $shape_x, $shape_y);
-        }
-        mod q4f {
-            use super::*;
-            cubecl_quant::testgen_quant!(QuantValue::Q4F, $shape_x, $shape_y);
-        }
-        mod q4s {
-            use super::*;
-            cubecl_quant::testgen_quant!(QuantValue::Q4S, $shape_x, $shape_y);
-        }
-        mod q2f {
-            use super::*;
-            cubecl_quant::testgen_quant!(QuantValue::Q2F, $shape_x, $shape_y);
-        }
-        mod q2s {
-            use super::*;
-            cubecl_quant::testgen_quant!(QuantValue::Q2S, $shape_x, $shape_y);
-        }
-    };
-    () => {
-        mod quant {
-            use super::*;
-            use cubecl::prelude::*;
-            use cubecl::{client::ComputeClient, prelude::TensorHandleRef};
-            use cubecl_core as cubecl;
-            use cubecl_quant::scheme::{QuantMode, QuantValue};
-
-            mod size32x32 {
-                use super::*;
-                cubecl_quant::testgen_quant!(32, 32);
-            }
-            mod size16x64 {
-                use super::*;
-                cubecl_quant::testgen_quant!(16, 64);
-            }
-        }
-    };
 }
