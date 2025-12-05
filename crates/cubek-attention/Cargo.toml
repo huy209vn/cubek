@@ -1,7 +1,7 @@
 [package]
 authors = ["louisfd <louisfd94@gmail.com>"]
 categories = ["science", "mathematics", "algorithms"]
-description = "CubeCL Attention Kernels Engine"
+description = "CubeK: Attention Kernels"
 edition.workspace = true
 keywords = []
 license.workspace = true

@@ -5,7 +5,7 @@ authors = [
     "maxtremblay <t.maxime@pm.me>",
 ]
 categories = ["science", "mathematics", "algorithms"]
-description = "CubeCL Reduce Algorithms."
+description = "CubeK: Reduce Kernels"
 edition.workspace = true
 keywords = []
 license.workspace = true
