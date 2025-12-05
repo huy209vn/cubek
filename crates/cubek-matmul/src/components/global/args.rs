@@ -66,8 +66,8 @@ pub trait MatmulArgs: Send + Sync + 'static + Clone {
     /// Type used for the output.
     type Output<EO: Numeric>: LaunchArg + LaunchArg + CubeType;
 
-    /// Inner state that is used to create [tensor inputs](TensorInput) and
-    /// [tensor outputs](TensorOutput) .
+    /// Inner state that is used to create tensor inputs and
+    /// tensor outputs.
     type State<Lhs: Numeric, Rhs: Numeric, EO: Numeric>: CubeType;
 
     /// Init the state.
@@ -124,7 +124,7 @@ pub trait MatmulArgs: Send + Sync + 'static + Clone {
 }
 
 #[derive(Clone, Copy)]
-/// Identification of the [tensor input](TensorInput).
+/// Identification of the tensor input.
 pub enum TensorInputIdent {
     Lhs,
     Rhs,

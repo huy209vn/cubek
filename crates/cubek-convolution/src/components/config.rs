@@ -10,7 +10,7 @@ use std::hash::Hash;
 
 use super::*;
 
-/// Convolution specific config, extends regular matmul [`Config`](global::Config)
+/// Convolution specific config, extends regular matmul `Config`.
 pub trait ConvGemmConfig:
     Copy + Clone + Eq + PartialEq + Hash + Debug + Send + Sync + 'static
 {

@@ -100,7 +100,7 @@ pub trait TileAttentionConfig:
 }
 
 pub trait TileAttentionFamily: Send + Sync + 'static {
-    /// The specific [TileMatmul] implementation associated with this family.
+    /// The specific TileMatmul implementation associated with this family.
     type TileAttention<AP: AttentionPrecision>: TileAttention<AP, Config = Self::Config>;
 
     /// The configuration type associated with this matmul family.

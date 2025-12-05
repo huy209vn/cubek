@@ -1,5 +1,3 @@
-use cubecl::CubeCount;
-
 use crate::components::{
     MatmulProblem, MatmulSetupError, TilingScheme,
     batch::partitioned_matmul::hypercube::{
@@ -7,6 +5,7 @@ use crate::components::{
         global_order::{GlobalOrder, GlobalOrderSelection},
     },
 };
+use cubecl::CubeCount;
 
 #[derive(Debug, Clone)]
 /// Determines how to launch the hypercube, i.e. anything
@@ -27,7 +26,7 @@ pub struct HypercubeSelectionBuilder<'a> {
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
 /// Determines how to launch the hypercube, i.e. anything
 /// relevant to CubeCount and where a Cube at a cube position should work
-/// Similar to [HyperCubeSelection] but injected in kernel as comptime struct
+/// Similar to HyperCubeSelection but injected in kernel as comptime struct
 pub struct HypercubeConfig {
     pub cube_span: CubeSpan,
     pub global_order: GlobalOrder,

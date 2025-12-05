@@ -194,10 +194,10 @@ impl BlockScaledLayout {
     }
 }
 
-/// [TensorView] with a linear layout inferred from the shape/strides at launch.
+/// TensorView with a linear layout inferred from the shape/strides at launch.
 /// Useful for elementwise kernels.
 pub type ScalesView<E, IO = ReadOnly> = TypedView<E, ScalesLayout, IO>;
-/// Launch type for [LinearTensorView].
+/// Launch type for LinearTensorView.
 pub type ScalesViewLaunch<'a, R> = TypedViewLaunch<'a, ScalesLayout, R>;
 
 /// Create a scales view from the values and scales handle, line size and quantization scheme.

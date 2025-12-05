@@ -18,7 +18,7 @@ use super::{StageEventListener, TilingLayout};
 
 /// A family of [StageMatmul] implementations that operate with any [precision](MatmulPrecision).
 pub trait StageMatmulFamily: Send + Sync + 'static {
-    /// The specific [TileMatmul] implementation associated with this family.
+    /// The specific TileMatmul implementation associated with this family.
     type Matmul<MP: MatmulPrecision, TL: TilingLayout, TR: TilingLayout, TA: TilingLayout, TO: TilingLayout>: StageMatmul<
             MP,
             Config = Self::Config,

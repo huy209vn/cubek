@@ -60,8 +60,7 @@ pub trait LoadingValidation {
     ) -> Result<(), InvalidConfigError>;
 }
 
-/// Validates if [async barrier instructions](SemanticType::Barrier) is available on the current
-/// device.
+/// Validates if async barrier instructions is available on the current device.
 pub fn validate_async_barrier<R: Runtime>(
     client: &ComputeClient<R>,
 ) -> Result<(), InvalidConfigError> {
@@ -78,8 +77,7 @@ pub fn validate_async_barrier<R: Runtime>(
     Ok(())
 }
 
-/// Validates if [async copy instructions](copy_async) is available on the current
-/// device.
+/// Validates if async copy instructions is available on the current device.
 pub fn validate_async_copy<R: Runtime>(
     client: &ComputeClient<R>,
     problem: &MatmulProblem,

@@ -11,7 +11,7 @@ use crate::components::{
 };
 use crate::components::{MatmulElems, MatmulLineSizes, MatmulSelection, MatrixLayout};
 
-/// A family of [TileMatmul] implementations that operate with any [precision](MatmulPrecision).
+/// A family of [TileMatmul] implementations that operate with any precision.
 pub trait TileMatmulFamily: Send + Sync + 'static {
     /// Config for this matmul
     type Config: TileConfig;

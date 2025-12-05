@@ -7,7 +7,7 @@ use crate::ReduceError;
 /// Sum all the elements of the input tensor distributed over `cube_count` cubes.
 ///
 /// This is an optimized version for summing large tensors using multiple cubes.
-/// For summing a single axis, the regular [reduce] entry point is preferred.
+/// For summing a single axis, the regular reduce entry point is preferred.
 ///
 /// Return an error if atomic addition is not supported for the type `N`.
 ///

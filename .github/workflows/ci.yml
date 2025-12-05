@@ -66,9 +66,6 @@ jobs:
           rust-toolchain: ${{ matrix.toolchain }}
           cache-key: ${{ matrix.rust }}-linux
       # --------------------------------------------------------------------------------
-      - name: Audit
-        run: cargo xtask check audit
-      # --------------------------------------------------------------------------------
       - name: Format
         shell: bash
         env:

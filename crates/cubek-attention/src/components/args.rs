@@ -41,7 +41,7 @@ pub trait AttentionArgs: Send + Sync + 'static + Clone {
     type Input<Q: Float, K: Float, V: Float, M: Numeric>: LaunchArg + CubeType;
     /// Type used for the output.
     type Output<O: Float>: LaunchArg + CubeType;
-    /// Inner state that is used to create [tensor inputs](TensorInput) and
+    /// Inner state that is used to create tensor inputs and
     /// [tensor outputs](TensorOutput) .
     type State<Q: Float, K: Float, V: Float, M: Numeric, O: Float>: CubeType;
 
@@ -691,7 +691,7 @@ pub struct TensorOutput<Q: Float, K: Float, V: Float, M: Numeric, O: Float, GA: 
     state: *mut GA::State<Q, K, V, M, O>,
 }
 
-/// Expand type for [tensor input](TensorInput).
+/// Expand type for tensor input.
 pub struct TensorQueryExpand<Q: Float, K: Float, V: Float, M: Numeric, O: Float, GA: AttentionArgs>
 {
     state: <GA::State<Q, K, V, M, O> as CubeType>::ExpandType,
@@ -720,7 +720,7 @@ pub struct TensorOutputExpand<Q: Float, K: Float, V: Float, M: Numeric, O: Float
 impl<Q: Float, K: Float, V: Float, M: Numeric, O: Float, MA: AttentionArgs>
     TensorQuery<Q, K, V, M, O, MA>
 {
-    /// Create a [tensor input](TensorInput) from the state and the [ident](TensorInputIdent).
+    /// Create a tensor input from the state and the ident.
     pub fn new(state: &MA::State<Q, K, V, M, O>) -> TensorQuery<Q, K, V, M, O, MA> {
         TensorQuery::<Q, K, V, M, O, MA> { state }
     }
@@ -776,7 +776,7 @@ impl<Q: Float, K: Float, V: Float, M: Numeric, O: Float, MA: AttentionArgs>
 impl<Q: Float, K: Float, V: Float, M: Numeric, O: Float, MA: AttentionArgs>
     TensorKey<Q, K, V, M, O, MA>
 {
-    /// Create a [tensor input](TensorInput) from the state and the [ident](TensorInputIdent).
+    /// Create a tensor input from the state and the ident.
     pub fn new(state: &MA::State<Q, K, V, M, O>) -> TensorKey<Q, K, V, M, O, MA> {
         TensorKey::<Q, K, V, M, O, MA> { state }
     }
@@ -832,7 +832,7 @@ impl<Q: Float, K: Float, V: Float, M: Numeric, O: Float, MA: AttentionArgs>
 impl<Q: Float, K: Float, V: Float, M: Numeric, O: Float, MA: AttentionArgs>
     TensorValue<Q, K, V, M, O, MA>
 {
-    /// Create a [tensor input](TensorInput) from the state and the [ident](TensorInputIdent).
+    /// Create a tensor input from the state and the ident.
     pub fn new(state: &MA::State<Q, K, V, M, O>) -> TensorValue<Q, K, V, M, O, MA> {
         TensorValue::<Q, K, V, M, O, MA> { state }
     }
@@ -888,7 +888,7 @@ impl<Q: Float, K: Float, V: Float, M: Numeric, O: Float, MA: AttentionArgs>
 impl<Q: Float, K: Float, V: Float, M: Numeric, O: Float, MA: AttentionArgs>
     TensorMask<Q, K, V, M, O, MA>
 {
-    /// Create a [tensor input](TensorInput) from the state and the [ident](TensorInputIdent).
+    /// Create a tensor input from the state and the ident.
     pub fn new(state: &MA::State<Q, K, V, M, O>) -> TensorMask<Q, K, V, M, O, MA> {
         TensorMask::<Q, K, V, M, O, MA> { state }
     }

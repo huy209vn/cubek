@@ -22,9 +22,9 @@ use cubecl::std::tensor::layout::Coords2d;
 pub type AttentionTilingLayout = ContiguousTilingLayout<RowMajorTilingOrder>;
 pub type AttentionLoadingStrategy = SyncFullCyclicLoading<RowMajorTilingOrder>;
 
-/// A family of [TileAttention] implementations that operate with any [precision](AttentionPrecision).
+/// A family of TileAttention implementations that operate with any [precision](AttentionPrecision).
 pub trait StageAttentionFamily: Send + Sync + 'static {
-    /// The specific [TileAttention] implementation associated with this family.
+    /// The specific TileAttention implementation associated with this family.
     type Attention<AP: AttentionPrecision>: StageAttention<
             AP,
             Config = Self::Config,
