@@ -42,7 +42,7 @@ pub trait ConcreteInputsFactory: LaunchArg {
         client: &ComputeClient<R>,
         lhs: &'a MatmulInputHandleRef<'a, R>,
         rhs: &'a MatmulInputHandleRef<'a, R>,
-        bias: Option<&'a TensorHandleRef<'a, R>>,
+        bias: Option<&'a MatmulInputHandleRef<'a, R>>,
         selection: &MatmulSelection,
         problem: &ConvolutionProblem,
         line_sizes: &MatmulLineSizes,
@@ -70,7 +70,7 @@ impl<Lhs: Numeric, Rhs: Numeric, EO: Numeric> ConcreteInputsFactory for TensorIn
         client: &ComputeClient<R>,
         lhs: &'a MatmulInputHandleRef<'a, R>,
         rhs: &'a MatmulInputHandleRef<'a, R>,
-        bias: Option<&'a TensorHandleRef<'a, R>>,
+        bias: Option<&'a MatmulInputHandleRef<'a, R>>,
         _selection: &MatmulSelection,
         problem: &ConvolutionProblem,
         line_sizes: &MatmulLineSizes,
@@ -125,7 +125,7 @@ impl<Lhs: Numeric, Rhs: Numeric, EO: Numeric> ConcreteInputsFactory for TensorIn
             ViewArg::new::<RhsLayout>(rhs.data().as_array_arg(line_sizes.rhs), layout_rhs),
             VirtualLayoutLaunch::new::<NoopLayout>(NoopLayoutLaunch::new()),
             bias.map(|bias| {
-                ViewArg::new::<BiasLayout>(bias.as_array_arg(line_sizes.out), layout_bias)
+                ViewArg::new::<BiasLayout>(bias.data().as_array_arg(line_sizes.out), layout_bias)
             })
             .into(),
             bias.map(|_| VirtualLayoutLaunch::new::<NoopLayout>(NoopLayoutLaunch::new()))
@@ -170,7 +170,7 @@ impl<Lhs: Numeric, Rhs: Numeric, EO: Numeric> ConcreteInputsFactory
         client: &ComputeClient<R>,
         lhs: &'a MatmulInputHandleRef<'a, R>,
         rhs: &'a MatmulInputHandleRef<'a, R>,
-        bias: Option<&'a TensorHandleRef<'a, R>>,
+        bias: Option<&'a MatmulInputHandleRef<'a, R>>,
         selection: &MatmulSelection,
         problem: &ConvolutionProblem,
         line_sizes: &MatmulLineSizes,
@@ -234,10 +234,16 @@ impl<Lhs: Numeric, Rhs: Numeric, EO: Numeric> ConcreteInputsFactory
             .map(|it| FastDivmodArgs::new(client, *it as u32))
             .collect();
 
+        // Im2col needs extra checking because if `k` is OOB it wraps around the kernel and can load
+        // in-bounds but not in-kernel elements. Other TMA layouts are always outside the shape if
+        // any matrix dim is out of bounds.
+        let stages_lhs = config.stage_config().lhs_smem_config().num_stages;
+        let stages_size_k = selection.tiling_scheme.elements_per_stage_along_k() * stages_lhs;
         let lhs_layout = TmaIm2colLayoutLaunch::new(
             shape_out,
             FastDivmodArgs::new(client, padded_channels),
             ConvolutionParams::from_problem(problem),
+            !shape_k.is_multiple_of(stages_size_k),
         );
         let rhs_layout = TmaWeightLayoutLaunch::new(
             FastDivmodArgs::new(client, padded_channels),
@@ -247,7 +253,7 @@ impl<Lhs: Numeric, Rhs: Numeric, EO: Numeric> ConcreteInputsFactory
         let bias = bias.map(|bias| {
             let layout =
                 BiasLayoutLaunch::new(ScalarArg::new(problem.n as u32), line_sizes.out as u32);
-            ViewArg::new::<BiasLayout>(bias.as_array_arg(line_sizes.out), layout)
+            ViewArg::new::<BiasLayout>(bias.data().as_array_arg(line_sizes.out), layout)
         });
 
         let inputs = TensorMapInputsLaunch::new(

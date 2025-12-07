@@ -1,12 +1,15 @@
 use cubecl::server::LaunchError;
-use cubecl::std::{
-    CubeOption,
-    tensor::{TensorHandle, into_contiguous_pitched},
-};
+use cubecl::std::{CubeOption, tensor::TensorHandle};
 use cubecl::{Runtime, client::ComputeClient, ir::StorageType, prelude::TensorHandleRef};
 use cubek_matmul::components::{
-    MatmulElems, MatmulLineSizes, MatmulSelection, MatmulSetupError,
-    global::{args::TensorMapArgs, read::async_full_tma::AsyncFullTmaLoading},
+    AvailableLineSizes, MatmulElems, MatmulLineSizes, MatmulSelection, MatmulSetupError,
+    global::{
+        args::TensorMapArgs,
+        read::{
+            async_full_tma::AsyncFullTmaLoading, sync_full_strided::SyncFullStridedLoading,
+            sync_full_tilewise::SyncFullTilewiseLoading,
+        },
+    },
     stage::StridedStageFamily,
     tile::io::Strided,
 };
@@ -15,30 +18,56 @@ use cubek_matmul::components::{
 };
 use cubek_matmul::components::{
     global::read::sync_full_cyclic::SyncFullCyclicLoading,
-    stage::{ColMajorTilingOrder, NumStages, RowMajorTilingOrder},
+    stage::{ColMajorTilingOrder, RowMajorTilingOrder},
 };
 use std::marker::PhantomData;
 
-use crate::components::{
-    ConvolutionProblem, convolution_matmul_selection,
-    global::{
-        read::full_reader::FullLoadingStrategy, single_stage::simple::SimpleConvolutionFamily,
+use crate::{
+    components::{
+        ConvolutionProblem, convolution_matmul_selection,
+        global::{
+            read::{
+                full_reader::FullLoadingStrategy,
+                strategy::{
+                    async_full_cyclic::AsyncFullCyclicLoading,
+                    async_full_strided::AsyncFullStridedLoading,
+                },
+            },
+            single_stage::simple::SimpleConvolutionFamily,
+        },
     },
+    kernels::layered::{into_tensor_handle, into_tensor_handle_tma},
 };
 
 use super::Algorithm;
 
 /// Cmma convolution
-pub struct SimpleConvAlgorithm<
-    TMM: TileMatmulFamily,
-    LL: FullLoadingStrategy = SyncFullCyclicLoading<RowMajorTilingOrder>,
-    LR: FullLoadingStrategy = SyncFullCyclicLoading<ColMajorTilingOrder>,
-> {
+pub struct SimpleConv<TMM: TileMatmulFamily, LL: FullLoadingStrategy, LR: FullLoadingStrategy> {
     _tmm: PhantomData<TMM>,
     _loader: PhantomData<(LL, LR)>,
 }
 
-pub struct SimpleTmaConvAlgorithm<TMM: TileMatmulFamily> {
+pub type SimpleSyncCyclicConv<TMM> = SimpleConv<
+    TMM,
+    SyncFullCyclicLoading<RowMajorTilingOrder>,
+    SyncFullCyclicLoading<ColMajorTilingOrder>,
+>;
+pub type SimpleSyncStridedConv<TMM> =
+    SimpleConv<TMM, SyncFullStridedLoading, SyncFullStridedLoading>;
+pub type SimpleSyncTilewiseConv<TMM> = SimpleConv<
+    TMM,
+    SyncFullTilewiseLoading<RowMajorTilingOrder>,
+    SyncFullTilewiseLoading<ColMajorTilingOrder>,
+>;
+pub type SimpleAsyncCyclicConv<TMM> = SimpleConv<
+    TMM,
+    AsyncFullCyclicLoading<RowMajorTilingOrder>,
+    AsyncFullCyclicLoading<ColMajorTilingOrder>,
+>;
+pub type SimpleAsyncStridedConv<TMM> =
+    SimpleConv<TMM, AsyncFullStridedLoading, AsyncFullStridedLoading>;
+
+pub struct SimpleAsyncTmaConv<TMM: TileMatmulFamily> {
     _tmm: PhantomData<TMM>,
 }
 
@@ -51,7 +80,7 @@ impl<
         >,
     LL: FullLoadingStrategy,
     LR: FullLoadingStrategy<SyncStrategy = LL::SyncStrategy>,
-> Algorithm for SimpleConvAlgorithm<TMM, LL, LR>
+> Algorithm for SimpleConv<TMM, LL, LR>
 {
     type TileMatmul = TMM;
     type StageMatmul = PlaneMatmulFamily<
@@ -69,16 +98,7 @@ impl<
         handle: &TensorHandleRef<'_, R>,
         dtype: StorageType,
     ) -> Result<TensorHandle<R>, LaunchError> {
-        if has_valid_layout(handle) {
-            Ok(TensorHandle::from_ref(handle, dtype))
-        } else {
-            into_contiguous_pitched(client, handle, dtype)
-        }
-    }
-
-    // TODO this is not the same as tma stages, it's stages in the sense of double buffering in matmul
-    fn num_stages() -> NumStages {
-        (1, 1).into()
+        into_tensor_handle(client, handle, dtype)
     }
 
     fn selection<R: Runtime>(
@@ -99,12 +119,6 @@ impl<
     }
 }
 
-fn has_valid_layout<R: Runtime>(handle: &TensorHandleRef<'_, R>) -> bool {
-    let rank = handle.shape.len();
-    let dim_c = rank - 1;
-    handle.strides[dim_c] == 1
-}
-
 impl<
     TMM: TileMatmulFamily<
             LhsTile = Strided,
@@ -112,7 +126,7 @@ impl<
             AccTile = CubeOption<Strided>,
             OutTile = Strided,
         >,
-> Algorithm for SimpleTmaConvAlgorithm<TMM>
+> Algorithm for SimpleAsyncTmaConv<TMM>
 {
     type TileMatmul = TMM;
     type StageMatmul = PlaneMatmulFamily<
@@ -131,16 +145,7 @@ impl<
         handle: &TensorHandleRef<'_, R>,
         dtype: StorageType,
     ) -> Result<TensorHandle<R>, LaunchError> {
-        if has_valid_layout(handle) {
-            Ok(TensorHandle::from_ref(handle, dtype))
-        } else {
-            into_contiguous_pitched(client, handle, dtype)
-        }
-    }
-
-    // TODO this is not the same as tma stages, it's stages in the sense of double buffering in matmul
-    fn num_stages() -> NumStages {
-        (1, 1).into()
+        into_tensor_handle_tma(client, handle, dtype)
     }
 
     fn selection<R: Runtime>(
@@ -153,5 +158,13 @@ impl<
         Ok(convolution_matmul_selection::<TMM, R>(
             client, problem, plane_dim, false, line_sizes, dtypes,
         )?)
+    }
+
+    fn filter_line_sizes(available_line_sizes: AvailableLineSizes) -> AvailableLineSizes {
+        AvailableLineSizes {
+            lhs: vec![1],
+            rhs: vec![1],
+            out: available_line_sizes.out,
+        }
     }
 }

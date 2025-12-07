@@ -15,6 +15,8 @@ pub struct TmaIm2colLayout {
     padded_channels: FastDivmod,
     #[cube(comptime)]
     params: ConvolutionParams,
+    #[cube(comptime)]
+    check_kernel: bool,
 }
 
 #[cube]
@@ -23,11 +25,13 @@ impl TmaIm2colLayout {
         shape_out: Sequence<FastDivmod>,
         padded_channels: FastDivmod,
         #[comptime] params: ConvolutionParams,
+        #[comptime] check_kernel: bool,
     ) -> Self {
         TmaIm2colLayout {
             shape_out,
             padded_channels,
             params,
+            check_kernel,
         }
     }
 }
@@ -46,8 +50,6 @@ impl Layout for TmaIm2colLayout {
 
         let mut in_offs = Sequence::<i32>::new();
 
-        comptime![println!("params: {params:?}")];
-
         #[unroll]
         for dim in 0..spatial_dims {
             let offs = spatial_offsets.index(dim) * comptime![params.stride[dim as usize]];
@@ -57,7 +59,7 @@ impl Layout for TmaIm2colLayout {
 
         let (mut k_idx, channel_start) = self.padded_channels.div_mod(k);
 
-        let pos = NhwcCoords {
+        let mut pos = NhwcCoords {
             batch: n_offs,
             spatial: in_offs,
             channel: channel_start,
@@ -72,6 +74,16 @@ impl Layout for TmaIm2colLayout {
             let k_size = comptime!(params.kernel_size[dim]);
             k_offs.push((k_idx % k_size) * comptime!(params.dilation[dim]));
             k_idx /= k_size;
+        }
+
+        if comptime![self.check_kernel] {
+            // This is the largest index that's aligned to the channel count in all cases.
+            // Alignment is 256, and that's the largest tile size possible with TMA.
+            // Could alternatively solve this by only loading if in bounds, and adjusting the awaited
+            // bytes by the in-bounds tiles but that's more complicated than just trying to load a very
+            // large channel index and letting bounds checks handle it.
+            let kernel_mask = (k_idx > 0) as u32 * 0x7FFFFF00u32;
+            pos.channel = Max::max(pos.channel, kernel_mask);
         }
 
         (pos, k_offs.rev())

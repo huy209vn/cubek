@@ -29,7 +29,7 @@ pub fn launch_kernel_concrete<R: Runtime, A: Algorithm>(
     client: &ComputeClient<R>,
     input: &MatmulInputHandleRef<'_, R>,
     weight: &MatmulInputHandleRef<'_, R>,
-    bias: &Option<TensorHandleRef<'_, R>>,
+    bias: &Option<MatmulInputHandleRef<'_, R>>,
     out: &TensorHandleRef<'_, R>,
     problem: ConvolutionProblem,
     line_sizes: MatmulLineSizes,

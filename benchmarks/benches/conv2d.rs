@@ -4,19 +4,13 @@ use cubecl::{
     client::ComputeClient,
     future,
     prelude::*,
-    std::{CubeOption, tensor::TensorHandle},
+    std::tensor::TensorHandle,
 };
 use cubek::{
-    convolution::{
-        self as convolution, ConvolutionArgs,
-        kernels::layered::algorithm::simple::SimpleConvAlgorithm,
-    },
+    convolution::{self as convolution, ConvolutionArgs, Strategy},
     matmul::{
-        MatmulInputHandleRef,
-        components::{
-            AccG, AccR, LhsG, LhsS, MatmulElems, MatmulPrecision, RhsG,
-            tile::{cmma::CmmaMatmul, io::Strided},
-        },
+        AcceleratedTileKind, MatmulInputHandleRef, ReadingStrategy,
+        components::{AccG, AccR, LhsG, LhsS, MatmulElems, MatmulPrecision, RhsG},
     },
     random::random_uniform,
 };
@@ -88,11 +82,18 @@ impl<R: Runtime, MP: MatmulPrecision> Benchmark for Conv2dBench<R, MP> {
         let out: TensorHandle<R> =
             TensorHandle::empty(&client, vec![n, c_out, h_out, w_out], *elems.acc_global);
 
-        convolution::launch_conv::<R, SimpleConvAlgorithm<CmmaMatmul<CubeOption<Strided>>>, 2>(
+        convolution::launch_ref::<R, 2>(
+            &Strategy::Simple {
+                read_strategy: ReadingStrategy::Cyclic,
+                tile_kind: AcceleratedTileKind::Cmma,
+            },
             &self.client,
             &MatmulInputHandleRef::Normal(input.as_ref(), *elems.lhs_global),
             &MatmulInputHandleRef::Normal(weight.as_ref(), *elems.rhs_global),
-            &Some(bias.as_ref()),
+            &Some(MatmulInputHandleRef::Normal(
+                bias.as_ref(),
+                *elems.acc_global,
+            )),
             &out.as_ref(),
             self.args.clone(),
             elems,

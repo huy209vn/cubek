@@ -12,7 +12,7 @@ use super::*;
 
 /// Convolution specific config, extends regular matmul `Config`.
 pub trait ConvGemmConfig:
-    Copy + Clone + Eq + PartialEq + Hash + Debug + Send + Sync + 'static
+    Deref<Target: GlobalConfig> + Copy + Clone + Eq + PartialEq + Hash + Debug + Send + Sync + 'static
 {
     type GlobalMatmulConfig: GlobalConfig;
 

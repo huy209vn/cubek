@@ -2,11 +2,11 @@ use cubek_matmul::components::{
     AvailableLineSizes, LoadingPrecomputeStrategy, MatmulElems, MatmulLineSizes, MatmulSelection,
     MatmulSetupError, MultiRowStrategy,
     global::{LoadSpecializationConfig, args::MatmulArgs, read::ReaderMode},
-    stage::{NumStages, PartitionBuffering, StageMatmulFamily},
+    stage::{PartitionBuffering, StageMatmulFamily},
     tile::TileMatmulFamily,
 };
 
-use cubecl::std::tensor::TensorHandle;
+use cubecl::std::tensor::{TensorHandle, into_contiguous_pitched};
 
 use cubecl::prelude::*;
 
@@ -33,8 +33,6 @@ pub trait Algorithm {
 
         CubeCount::Static(cubes_needed_m, cubes_needed_n, 1)
     }
-
-    fn num_stages() -> NumStages;
 
     fn multi_row_strategy() -> MultiRowStrategy {
         MultiRowStrategy::Never
@@ -86,4 +84,52 @@ pub trait Algorithm {
         line_sizes: &MatmulLineSizes,
         matmul_elems: &mut MatmulElems,
     ) -> Result<MatmulSelection, MatmulSetupError>;
+}
+
+pub(crate) fn into_tensor_handle<R: Runtime>(
+    client: &ComputeClient<R>,
+    handle: &TensorHandleRef<'_, R>,
+    dtype: StorageType,
+) -> Result<TensorHandle<R>, LaunchError> {
+    let handle = if has_valid_layout(handle) {
+        TensorHandle::from_ref(handle, dtype)
+    } else {
+        into_contiguous_pitched(client, handle, dtype)?
+    };
+    Ok(handle)
+}
+
+fn has_valid_layout<R: Runtime>(handle: &TensorHandleRef<'_, R>) -> bool {
+    let rank = handle.shape.len();
+    let dim_c = rank - 1;
+    handle.strides[dim_c] == 1
+}
+
+const TMA_STRIDE_ALIGN: usize = 16;
+
+pub(crate) fn into_tensor_handle_tma<R: Runtime>(
+    client: &ComputeClient<R>,
+    handle: &TensorHandleRef<'_, R>,
+    dtype: StorageType,
+) -> Result<TensorHandle<R>, LaunchError> {
+    let handle = if has_valid_layout_tma(handle) {
+        TensorHandle::from_ref(handle, dtype)
+    } else {
+        into_contiguous_pitched(client, handle, dtype)?
+    };
+    Ok(handle)
+}
+
+pub(crate) fn has_valid_layout_tma<R: Runtime>(handle: &TensorHandleRef<'_, R>) -> bool {
+    let stride_align = TMA_STRIDE_ALIGN / handle.elem_size;
+    let rank = handle.shape.len();
+    let dim_c = rank - 1;
+
+    let aligned = handle.strides[..dim_c]
+        .iter()
+        .all(|stride| stride % stride_align == 0);
+
+    let valid_layout = handle.strides[dim_c] == 1;
+
+    valid_layout && aligned
 }
