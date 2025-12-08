@@ -1,93 +1,106 @@
-use cubecl::std::tensor::TensorHandle;
-use cubecl::{CubeElement, Runtime, client::ComputeClient, prelude::Float};
+// use std::fmt::Display;
 
-use crate::suite::test_utils::Sample;
+// use cubecl::matmul::components::MatmulPrecision;
+// use cubecl::std::tensor::TensorHandle;
+// use cubecl::{CubeElement, Runtime, client::ComputeClient, prelude::Float};
+// use cubek_matmul::components::{MatmulProblem, MatrixLayout};
 
-pub(crate) struct MatmulTestCase {
-    pub m: usize,
-    pub k: usize,
-    pub n: usize,
-    pub batch: usize,
-}
+// use crate::suite::test_utils::{Sample, TestPrecision, matmul_cpu_reference};
 
-impl MatmulTestCase {
-    pub(crate) fn matmul_cpu<R: Runtime, F: Float + CubeElement>(
-        &self,
-        lhs: &TensorHandle<R>,
-        rhs: &TensorHandle<R>,
-        client: &ComputeClient<R>,
-    ) -> Vec<F> {
-        let lhs_binding = &client.read_one_tensor(lhs.handle.clone().copy_descriptor(
-            &lhs.shape,
-            &lhs.strides,
-            size_of::<F>(),
-        ));
-        let rhs_binding = &client.read_one_tensor(rhs.handle.clone().copy_descriptor(
-            &rhs.shape,
-            &rhs.strides,
-            size_of::<F>(),
-        ));
 
-        let lhs = F::from_bytes(lhs_binding);
-        let rhs = F::from_bytes(rhs_binding);
 
-        self.matmul_cpu_algorithm(lhs, rhs)
-    }
+// // impl MatmulTestCase {
+// //     pub(crate) fn matmul_cpu<R: Runtime, F: TestPrecision>(
+// //         &self,
+// //         lhs: &TensorHandle<R>,
+// //         rhs: &TensorHandle<R>,
+// //         client: &ComputeClient<R>,
+// //     ) -> Vec<F> {
+// //         // let lhs_binding = &client.read_one_tensor(lhs.handle.clone().copy_descriptor(
+// //         //     &lhs.shape,
+// //         //     &lhs.strides,
+// //         //     size_of::<F>(),
+// //         // ));
+// //         // let rhs_binding = &client.read_one_tensor(rhs.handle.clone().copy_descriptor(
+// //         //     &rhs.shape,
+// //         //     &rhs.strides,
+// //         //     size_of::<F>(),
+// //         // ));
 
-    fn matmul_cpu_algorithm<F: Float + CubeElement>(&self, lhs: &[F], rhs: &[F]) -> Vec<F> {
-        let mut out = vec![F::from_int(0); self.batch * self.m * self.n];
-        let lhs_batch_offset = self.m * self.k;
-        let rhs_batch_offset = self.k * self.n;
-        let out_batch_offset = self.m * self.n;
+// //         // let lhs = F::from_bytes(lhs_binding);
+// //         // let rhs = F::from_bytes(rhs_binding);
 
-        for b in 0..self.batch {
-            for i in 0..self.m {
-                for j in 0..self.n {
-                    for k_ in 0..self.k {
-                        let lhs_value = lhs[b * lhs_batch_offset + i * self.k + k_];
-                        let rhs_value = rhs[b * rhs_batch_offset + j + k_ * self.n];
+// //         let problem = MatmulProblem {
+// //             m: self.m,
+// //             n: self.n,
+// //             k: self.k,
+// //             lhs_batches: vec![self.batch],
+// //             rhs_batches: vec![self.batch],
+// //             out_batches: vec![self.batch],
+// //             lhs_strides: vec![self.m * self.k, self.k],
+// //             rhs_strides: vec![self.k * self.n, self.n],
+// //             lhs_layout: MatrixLayout::RowMajor,
+// //             rhs_layout: MatrixLayout::RowMajor,
+// //         };
 
-                        let result = lhs_value * rhs_value;
+// //         // self.matmul_cpu_algorithm(lhs, rhs)
+// //         matmul_cpu_reference::<F>(lhs, rhs, &problem)
+// //     }
 
-                        out[b * out_batch_offset + i * self.n + j] += result;
-                    }
-                }
-            }
-        }
+// //     // fn matmul_cpu_algorithm<F: Float + CubeElement>(&self, lhs: &[F], rhs: &[F]) -> Vec<F> {
+// //     //     let mut out = vec![F::from_int(0); self.batch * self.m * self.n];
+// //     //     let lhs_batch_offset = self.m * self.k;
+// //     //     let rhs_batch_offset = self.k * self.n;
+// //     //     let out_batch_offset = self.m * self.n;
 
-        out
-    }
+// //     //     for b in 0..self.batch {
+// //     //         for i in 0..self.m {
+// //     //             for j in 0..self.n {
+// //     //                 for k_ in 0..self.k {
+// //     //                     let lhs_value = lhs[b * lhs_batch_offset + i * self.k + k_];
+// //     //                     let rhs_value = rhs[b * rhs_batch_offset + j + k_ * self.n];
 
-    pub(crate) fn random_lhs<R: Runtime, F: Float + CubeElement + Sample>(
-        &self,
-        client: &ComputeClient<R>,
-    ) -> TensorHandle<R> {
-        self.random_tensor::<R, F>(client, vec![self.batch, self.m, self.k])
-    }
+// //     //                     let result = lhs_value * rhs_value;
 
-    pub(crate) fn random_rhs<R: Runtime, F: Float + CubeElement + Sample>(
-        &self,
-        client: &ComputeClient<R>,
-    ) -> TensorHandle<R> {
-        self.random_tensor::<R, F>(client, vec![self.batch, self.k, self.n])
-    }
+// //     //                     out[b * out_batch_offset + i * self.n + j] += result;
+// //     //                 }
+// //     //             }
+// //     //         }
+// //     //     }
 
-    pub(crate) fn empty_out<R: Runtime, F: Float + CubeElement + Sample>(
-        &self,
-        client: &ComputeClient<R>,
-    ) -> TensorHandle<R> {
-        TensorHandle::empty(
-            client,
-            vec![self.batch, self.m, self.n],
-            F::as_type_native_unchecked(),
-        )
-    }
+// //     //     out
+// //     // }
 
-    pub(crate) fn random_tensor<R: Runtime, F: Float + CubeElement + Sample>(
-        &self,
-        client: &ComputeClient<R>,
-        shape: Vec<usize>,
-    ) -> TensorHandle<R> {
-        F::sample(client, &shape, 999)
-    }
-}
+// //     pub(crate) fn random_lhs<R: Runtime, F: Float + CubeElement + Sample>(
+// //         &self,
+// //         client: &ComputeClient<R>,
+// //     ) -> TensorHandle<R> {
+// //         self.random_tensor::<R, F>(client, vec![self.batch, self.m, self.k])
+// //     }
+
+// //     pub(crate) fn random_rhs<R: Runtime, F: Float + CubeElement + Sample>(
+// //         &self,
+// //         client: &ComputeClient<R>,
+// //     ) -> TensorHandle<R> {
+// //         self.random_tensor::<R, F>(client, vec![self.batch, self.k, self.n])
+// //     }
+
+// //     pub(crate) fn empty_out<R: Runtime, F: Float + CubeElement + Sample>(
+// //         &self,
+// //         client: &ComputeClient<R>,
+// //     ) -> TensorHandle<R> {
+// //         TensorHandle::empty(
+// //             client,
+// //             vec![self.batch, self.m, self.n],
+// //             F::as_type_native_unchecked(),
+// //         )
+// //     }
+
+// //     pub(crate) fn random_tensor<R: Runtime, F: Float + CubeElement + Sample>(
+// //         &self,
+// //         client: &ComputeClient<R>,
+// //         shape: Vec<usize>,
+// //     ) -> TensorHandle<R> {
+// //         F::sample(client, &shape, 999)
+// //     }
+// // }

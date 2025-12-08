@@ -1,5 +1,6 @@
 use std::fmt::Display;
 
+use cubecl::TestRuntime;
 use cubecl::features::MmaConfig;
 use cubecl::{
     CubeElement, Runtime,
@@ -11,117 +12,138 @@ use cubecl::{
 };
 
 use crate::suite::layered::matmul_test_launcher::strides;
+use crate::suite::{TestEA, TestEG, TestES};
 use cubecl::std::tensor::TensorHandle;
-use cubek_matmul::components::{MatmulIdent, MatmulPrecision, MatmulProblem};
+use cubek_matmul::components::{MatmulIdent, MatmulProblem};
 
-pub trait TestPrecision {
-    type EG: Numeric + CubeElement + Display + CastInto<Self::ES> + Sample;
-    type ES: Numeric + Display + CastInto<Self::EA>;
-    type EA: Numeric + Display + CastInto<Self::EG>;
-    type MP: MatmulPrecision;
+// pub trait TestPrecision {
+//     type EG: Numeric + CubeElement + Display + CastInto<Self::ES> + Sample;
+//     type ES: Numeric + Display + CastInto<Self::EA>;
+//     type EA: Numeric + Display + CastInto<Self::EG>;
+//     type MP: MatmulPrecision;
 
-    #[allow(clippy::too_many_arguments)]
-    fn assert_result<R: Runtime>(
-        lhs: &[Self::EG],
-        rhs: &[Self::EG],
-        problem: &MatmulProblem,
-        client: &ComputeClient<R>,
-        out: server::Handle,
-        shape: &[usize],
-        strides: &[usize],
-    );
-}
+//     #[allow(clippy::too_many_arguments)]
+//     fn assert_result<R: Runtime>(
+//         lhs: &[Self::EG],
+//         rhs: &[Self::EG],
+//         problem: &MatmulProblem,
+//         client: &ComputeClient<R>,
+//         out: server::Handle,
+//         shape: &[usize],
+//         strides: &[usize],
+//     );
+// }
 
-impl<EG, ES> TestPrecision for (EG, ES)
-where
-    EG: Float + CubeElement + Display + CastInto<ES> + Sample + MatmulPrecision,
-    ES: Numeric + Display + CastInto<f32>,
-    f32: CastInto<EG>,
-{
-    type EG = EG;
-    type ES = ES;
-    type EA = f32;
-    type MP = EG;
+// impl<EG, ES> TestPrecision for (EG, ES)
+// where
+//     EG:,
+//     ES: Numeric + Display + CastInto<f32>,
+//     f32: CastInto<EG>,
+// {
+//     type EG = EG;
+//     type ES = ES;
+//     type EA = f32;
+//     type MP = EG;
 
-    fn assert_result<R: Runtime>(
-        lhs: &[EG],
-        rhs: &[EG],
-        problem: &MatmulProblem,
-        client: &ComputeClient<R>,
-        out: server::Handle,
-        shape: &[usize],
-        strides: &[usize],
-    ) {
-        let maybe_f16 = client.properties().features.cmma.contains(&MmaConfig {
-            a_type: ES::as_type_native().expect("To be a native type"),
-            b_type: ES::as_type_native().expect("To be a native type"),
-            cd_type: EG::as_type_native().expect("To be a native type"),
-            m: 16,
-            k: 16,
-            n: 16,
-        });
-        let maybe_tf32 = client.properties().features.cmma.contains(&MmaConfig {
-            a_type: ES::as_type_native().expect("To be a native type"),
-            b_type: ES::as_type_native().expect("To be a native type"),
-            cd_type: EG::as_type_native().expect("To be a native type"),
-            m: 16,
-            k: 8,
-            n: 16,
-        });
+pub fn assert_result(
+    lhs: &[TestEG],
+    rhs: &[TestEG],
+    problem: &MatmulProblem,
+    client: &ComputeClient<TestRuntime>,
+    out: server::Handle,
+    shape: &[usize],
+    strides: &[usize],
+) {
+    let maybe_f16 = client.properties().features.cmma.contains(&MmaConfig {
+        a_type: TestES::as_type_native().expect("To be a native type"),
+        b_type: TestES::as_type_native().expect("To be a native type"),
+        cd_type: TestEG::as_type_native().expect("To be a native type"),
+        m: 16,
+        k: 16,
+        n: 16,
+    });
+    let maybe_tf32 = client.properties().features.cmma.contains(&MmaConfig {
+        a_type: TestES::as_type_native().expect("To be a native type"),
+        b_type: TestES::as_type_native().expect("To be a native type"),
+        cd_type: TestEG::as_type_native().expect("To be a native type"),
+        m: 16,
+        k: 8,
+        n: 16,
+    });
 
-        // Need to compensate for the temporary conversion to f16/tf32
-        let epsilon = match maybe_f16 || maybe_tf32 {
-            true => 3.0 * 10e-6 / EG::EPSILON.to_f32().unwrap() * half::f16::EPSILON.to_f32(),
-            false => 3.0 * 10e-6,
-        };
+    // Need to compensate for the temporary conversion to f16/tf32
+    let epsilon = match maybe_f16 || maybe_tf32 {
+        true => 3.0 * 10e-6 / TestEG::EPSILON.to_f32() * half::f16::EPSILON.to_f32(),
+        false => 3.0 * 10e-6,
+    };
 
-        let expected = matmul_cpu_reference::<Self>(lhs, rhs, problem)
-            .into_iter()
-            .map(|x| x.cast_into())
-            .collect::<Vec<EG>>();
+    let expected = matmul_cpu_reference::<TestEG, TestES, TestEA>(lhs, rhs, problem)
+        .into_iter()
+        .collect::<Vec<TestEG>>();
 
-        if let Err(e) =
-            assert_equals_approx::<R, EG>(client, out, shape, strides, &expected, epsilon)
-        {
-            panic!("{}", e);
-        }
+    if let Err(e) = assert_equals_approx::<TestEG>(client, out, shape, strides, &expected, epsilon)
+    {
+        panic!("{}", e);
     }
 }
+// }
 
 /// Compares the content of a handle to a given slice of f32.
-pub(crate) fn assert_equals_approx<R: Runtime, F: Float + CubeElement + Display>(
-    client: &ComputeClient<R>,
+pub(crate) fn assert_equals_approx<F: Float + CubeElement + Display>(
+    client: &ComputeClient<TestRuntime>,
     output: server::Handle,
     shape: &[usize],
     strides: &[usize],
     expected: &[F],
     epsilon: f32,
 ) -> Result<(), String> {
-    let actual = client.read_one_tensor(output.copy_descriptor(shape, strides, size_of::<F>()));
+    let env = std::env::var("MATMUL_TEST_MODE");
+
+    let print_instead_of_compare = match env {
+        Ok(val) => matches!(val.as_str(), "print"),
+        Err(_) => false,
+    };
+
+    let actual =
+        client.read_one_tensor(output.copy_descriptor(shape, strides, F::type_size() as usize));
     let actual = F::from_bytes(&actual);
 
-    // normalize to type epsilon
-    let epsilon = (epsilon / f32::EPSILON * F::EPSILON.to_f32().unwrap()).max(epsilon);
+    let epsilon = epsilon.max(F::EPSILON.to_f32().unwrap());
 
     for (i, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
-        // account for lower precision at higher values
-        let allowed_error = (epsilon * e.to_f32().unwrap().abs()).max(epsilon);
+        let allowed_error = (epsilon * e.to_f32().unwrap()).max(epsilon);
 
-        if f32::is_nan(a.to_f32().unwrap())
-            || f32::abs(a.to_f32().unwrap() - e.to_f32().unwrap()) >= allowed_error
-        {
-            return Err(format!(
-                "Values differ more than epsilon: index={} actual={}, expected={}, difference={}, epsilon={}",
-                i,
-                *a,
-                *e,
-                f32::abs(a.to_f32().unwrap() - e.to_f32().unwrap()),
-                epsilon
-            ));
+        // account for lower precision at higher values
+        if print_instead_of_compare {
+            println!("{:?}: {:?}, {:?}", i, a, e);
+        } else {
+            let actual_nan = f32::is_nan(a.to_f32().unwrap());
+            let expected_nan = f32::is_nan(e.to_f32().unwrap());
+
+            if actual_nan != expected_nan {
+                if expected_nan {
+                    return Err(format!("Expected NaN, got value={:?}", *a));
+                } else {
+                    return Err(format!("Expected value={:?}, got NaN", *e));
+                }
+            }
+
+            let difference = f32::abs(a.to_f32().unwrap() - e.to_f32().unwrap());
+
+            if difference >= allowed_error {
+                return Err(format!(
+                    "Values differ more than epsilon: index={} actual={}, expected={}, difference={}, epsilon={}",
+                    i, *a, *e, difference, epsilon
+                ));
+            }
         }
     }
 
-    Ok(())
+    if print_instead_of_compare {
+        Err("".to_string())
+    } else {
+        Ok(())
+    }
 }
 
 pub trait CastInto<E> {
@@ -304,11 +326,15 @@ impl Sample for tf32 {
 ///
 /// This is a naive CPU implementation, very slow on large payloads,
 /// not designed to be used for other purposes than testing.
-pub(crate) fn matmul_cpu_reference<P: TestPrecision>(
-    lhs: &[P::EG],
-    rhs: &[P::EG],
+pub(crate) fn matmul_cpu_reference<
+    EG: Numeric + CastInto<ES>,
+    ES: Numeric + CastInto<EA>,
+    EA: Numeric + CastInto<EG>,
+>(
+    lhs: &[EG],
+    rhs: &[EG],
     problem: &MatmulProblem,
-) -> Vec<P::EA>
+) -> Vec<EG>
 where
 {
     let m = problem.m;
@@ -327,7 +353,7 @@ where
     let rhs_strides = strides(problem, MatmulIdent::Rhs);
     let out_strides = strides(problem, MatmulIdent::Out);
 
-    let mut out = vec![P::EA::from_int(0); m * n * num_batches];
+    let mut acc = vec![EA::from_int(0); m * n * num_batches];
 
     for nth_batch in 0..num_batches {
         let batch_out = nth_batch * m * n;
@@ -346,17 +372,29 @@ where
                     let rhs_index = k_ * n + j;
                     let out_index = i * n + j;
 
-                    let l: P::ES = lhs[batch_lhs + lhs_index].cast_into();
-                    let r: P::ES = rhs[batch_rhs + rhs_index].cast_into();
+                    let l: ES = lhs[batch_lhs + lhs_index].cast_into();
+                    let r: ES = rhs[batch_rhs + rhs_index].cast_into();
                     let prod = l * r;
 
-                    out[batch_out + out_index] += prod.cast_into();
+                    acc[batch_out + out_index] += prod.cast_into();
                 }
             }
         }
     }
 
-    out
+    // Allows EG != EA
+    if core::any::TypeId::of::<EG>() == core::any::TypeId::of::<EA>() {
+        // EG == EA → return `acc` directly
+        let acc_as_eg: Vec<EG> = unsafe { std::mem::transmute(acc) };
+        acc_as_eg
+    } else {
+        // EG != EA → cast each element
+        let mut out = vec![EG::from_int(0); m * n * num_batches];
+        for i in 0..m * n * num_batches {
+            out[i] = acc[i].cast_into();
+        }
+        out
+    }
 }
 
 #[allow(unused)]
