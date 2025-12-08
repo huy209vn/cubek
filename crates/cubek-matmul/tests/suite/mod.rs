@@ -2,7 +2,7 @@
 
 // pub type TestEG = half::f16;
 pub type TestEG = f32;
-pub type TestES = half::f16;
+pub type TestES = f32;
 pub type TestEA = f32;
 // TestEG: Float + CubeElement + Display + CastInto<TestES> + Sample + MatmulPrecision,
 // TestES: Numeric + CastInto<TestEA>,
