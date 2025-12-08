@@ -81,8 +81,8 @@ where
 
         // k is tricky and is handled specially by different loaders so always check for now.
         // m and n don't have padding so checks work as normal.
-        let check_m_bounds = problem.m.is_multiple_of(stage_size_m);
-        let check_n_bounds = problem.n.is_multiple_of(stage_size_n);
+        let check_m_bounds = !problem.m.is_multiple_of(stage_size_m);
+        let check_n_bounds = !problem.n.is_multiple_of(stage_size_n);
         let check_k_bounds = true;
 
         let plane_role_config = stage_config.plane_role_config();
