@@ -19,29 +19,40 @@ pub struct ReducePartition {
 }
 
 #[derive(Clone)]
-pub struct PartitionConfig {
-    pub shared: bool,
-    pub use_planes: bool,
+pub struct PartitionOption {
+    pub split: PartitionSplit,
+    pub line_mode: LineMode,
 }
 
-impl PartitionConfig {
-    fn new(blueprint: ReduceBlueprint) -> Self {
+#[derive(Clone)]
+pub enum PartitionSplit {
+    /// The axis is not splitted and is executed entirely by a single unit.
+    Unit,
+    /// The axis is splitted across a plane.
+    Plane,
+    /// The axis is splitted across a cube.
+    Cube,
+}
+
+impl PartitionOption {
+    fn new(blueprint: ReduceBlueprint) -> PartitionOption {
         match blueprint.kind {
-            ReduceBlueprintKind::Unit => Self {
-                shared: false,
-                use_planes: false,
+            ReduceBlueprintKind::Unit => PartitionOption {
+                split: PartitionSplit::Unit,
+                line_mode: blueprint.line_mode,
             },
-            ReduceBlueprintKind::Plane(..) => Self {
-                shared: false,
-                use_planes: true,
+            ReduceBlueprintKind::Plane(..) => PartitionOption {
+                split: PartitionSplit::Plane,
+                line_mode: blueprint.line_mode,
             },
-            ReduceBlueprintKind::Cube(b) => Self {
-                shared: true,
-                use_planes: b.use_planes,
+            ReduceBlueprintKind::Cube(..) => PartitionOption {
+                split: PartitionSplit::Cube,
+                line_mode: blueprint.line_mode,
             },
         }
     }
 }
+
 #[cube]
 impl ReducePartition {
     pub(crate) fn new<P: ReducePrecision, Out: Numeric>(
@@ -49,11 +60,9 @@ impl ReducePartition {
         input: &VirtualTensor<P::EI>,
         output: &mut VirtualTensor<Out, ReadWrite>,
         axis_reduce: u32,
-        #[comptime] blueprint: ReduceBlueprint,
+        #[comptime] config: PartitionOption,
     ) -> ReducePartition {
-        let config = comptime!(PartitionConfig::new(blueprint));
-
-        match comptime!(blueprint.line_mode) {
+        match comptime!(config.line_mode) {
             LineMode::Parallel => partition_parallel::<P, Out>(
                 reduce_index,
                 input,
@@ -71,5 +80,16 @@ impl ReducePartition {
                 config,
             ),
         }
+    }
+
+    pub(crate) fn from_blueprint<P: ReducePrecision, Out: Numeric>(
+        reduce_index: u32,
+        input: &VirtualTensor<P::EI>,
+        output: &mut VirtualTensor<Out, ReadWrite>,
+        axis_reduce: u32,
+        #[comptime] blueprint: ReduceBlueprint,
+    ) -> ReducePartition {
+        let config = comptime!(PartitionOption::new(blueprint));
+        ReducePartition::new::<P, Out>(reduce_index, input, output, axis_reduce, config)
     }
 }

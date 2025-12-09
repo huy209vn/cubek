@@ -1,5 +1,5 @@
 use crate::components::{
-    partition::{PartitionConfig, ReducePartition},
+    partition::{PartitionOption, PartitionSplit, ReducePartition},
     precision::ReducePrecision,
 };
 use cubecl::{prelude::*, std::tensor::r#virtual::VirtualTensor};
@@ -11,7 +11,7 @@ pub fn partition_perpendicular<P: ReducePrecision, Out: Numeric>(
     output: &mut VirtualTensor<Out, ReadWrite>,
     axis_reduce: u32,
     #[comptime] input_line_size: u32,
-    #[comptime] params: PartitionConfig,
+    #[comptime] config: PartitionOption,
 ) -> ReducePartition {
     let shape_axis = input.shape(axis_reduce);
 
@@ -26,12 +26,10 @@ pub fn partition_perpendicular<P: ReducePrecision, Out: Numeric>(
 
     let coordinate_end = shape_axis;
 
-    let coordinate_step = if params.shared {
-        CUBE_DIM
-    } else if params.use_planes {
-        CUBE_DIM_X
-    } else {
-        1_u32.runtime()
+    let coordinate_step = match comptime!(config.split) {
+        PartitionSplit::Unit => 1u32.runtime(),
+        PartitionSplit::Plane => CUBE_DIM_X,
+        PartitionSplit::Cube => CUBE_DIM,
     };
 
     ReducePartition {

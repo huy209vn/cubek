@@ -18,6 +18,7 @@ impl UnitReduceConfig {
         }
     }
 }
+
 /// Use an individual unit to reduce the `items` with the specified range.
 /// That is, this will reduces `items[range.start]`, `items[range.start + range.step]`
 /// until `items[range.end]` (exclusive).

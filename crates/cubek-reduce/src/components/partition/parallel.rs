@@ -1,5 +1,5 @@
 use crate::components::{
-    partition::{PartitionConfig, ReducePartition},
+    partition::{PartitionOption, PartitionSplit, ReducePartition},
     precision::ReducePrecision,
 };
 use cubecl::{prelude::*, std::tensor::r#virtual::VirtualTensor};
@@ -11,7 +11,7 @@ pub fn partition_parallel<P: ReducePrecision, Out: Numeric>(
     output: &mut VirtualTensor<Out, ReadWrite>,
     axis_reduce: u32,
     #[comptime] input_line_size: u32,
-    #[comptime] params: PartitionConfig,
+    #[comptime] config: PartitionOption,
 ) -> ReducePartition {
     let shape_axis = input.shape(axis_reduce);
 
@@ -24,12 +24,10 @@ pub fn partition_parallel<P: ReducePrecision, Out: Numeric>(
 
     let coordinate_end = shape_axis;
 
-    let coordinate_step = if params.shared {
-        CUBE_DIM * input_line_size
-    } else if params.use_planes {
-        CUBE_DIM_X * input_line_size
-    } else {
-        input_line_size.runtime()
+    let coordinate_step = match comptime!(config.split) {
+        PartitionSplit::Unit => input_line_size.runtime(),
+        PartitionSplit::Plane => CUBE_DIM_X * input_line_size,
+        PartitionSplit::Cube => CUBE_DIM * input_line_size,
     };
 
     ReducePartition {

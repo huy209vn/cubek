@@ -1,8 +1,24 @@
 use crate::{
-    LineMode,
-    components::instructions::{ReduceCoordinate, ReduceRequirements},
+    LineMode, ReduceInstruction, ReducePrecision,
+    components::{
+        instructions::{ReduceCoordinate, ReduceOperation, ReduceRequirements},
+        partition::ReducePartition,
+    },
 };
-use cubecl::prelude::*;
+use cubecl::{prelude::*, std::tensor::r#virtual::VirtualTensor};
+
+#[cube]
+pub trait ReduceJob<P: ReducePrecision, I: ReduceInstruction<P>> {
+    type Config: Send + 'static;
+
+    fn execute(
+        input: &VirtualTensor<P::EI>,
+        inst: &I,
+        partition: ReducePartition,
+        accumulator: &mut I::AccumulatorItem,
+        #[comptime] config: Self::Config,
+    );
+}
 
 // If line mode is parallel, fill a line with `x, x+1, ... x+ line_size - 1` where `x = first`.
 // If line mode is perpendicular, fill a line with `x, x, ... x` where `x = first`.

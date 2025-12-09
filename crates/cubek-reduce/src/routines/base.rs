@@ -9,7 +9,10 @@ use crate::{
     },
     routines::{ReduceBlueprint, ReduceBlueprintKind},
 };
-use cubecl::{prelude::*, std::tensor::r#virtual::VirtualTensor};
+use cubecl::{
+    prelude::*,
+    std::tensor::{layout::plain::PlainLayout, r#virtual::VirtualTensor},
+};
 
 #[cube]
 pub fn reduce_kernel_virtual<In: Numeric, Out: Numeric, Acc: Numeric>(
@@ -53,8 +56,13 @@ fn reduce_kernel_inner<P: ReducePrecision, Out: Numeric, R: ReduceFamily>(
     #[comptime] blueprint: ReduceBlueprint,
     #[comptime] config: R::Config,
 ) {
-    let partition =
-        ReducePartition::new::<P, Out>(reduce_index, input, output, axis_reduce, blueprint);
+    let partition = ReducePartition::from_blueprint::<P, Out>(
+        reduce_index,
+        input,
+        output,
+        axis_reduce,
+        blueprint,
+    );
 
     let input_line_size = input.line_size();
     let inst = &R::Instruction::<P>::from_config(config);
