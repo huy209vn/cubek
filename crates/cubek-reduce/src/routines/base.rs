@@ -106,12 +106,6 @@ fn get_reduce_index(#[comptime] params: ReduceBlueprintKind) -> u32 {
         ReduceBlueprintKind::Plane { .. } => CUBE_POS * CUBE_DIM_Y + UNIT_POS_Y,
         ReduceBlueprintKind::Cube { .. } => CUBE_POS,
     }
-    // if params.shared.is_some() {
-    //     CUBE_POS
-    // } else if params.use_planes {
-    // } else {
-    //     ABSOLUTE_POS
-    // }
 }
 
 #[cube]
