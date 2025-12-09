@@ -1,9 +1,12 @@
-use crate::components::global::layout::NhwcCoords;
-use cubecl::prelude::*;
-use cubecl::std::{
-    FastDivmod,
-    tensor::layout::{Coords3d, Layout, LayoutExpand},
+use cubecl::{
+    prelude::*,
+    std::{
+        FastDivmod,
+        tensor::layout::{Coords3d, Layout, LayoutExpand},
+    },
 };
+
+use crate::components::global::layout::NhwcCoords;
 
 #[derive(CubeType, CubeLaunch)]
 pub struct TmaWeightLayout {
@@ -46,32 +49,6 @@ impl Layout for TmaWeightLayout {
             spatial: k_pos.rev(),
             channel: in_c,
         }
-    }
-
-    fn is_in_bounds(&self, _pos: Self::Coordinates) -> bool {
-        true.runtime()
-    }
-
-    fn shape(&self) -> Self::Coordinates {
-        (u32::MAX, u32::MAX, u32::MAX).runtime()
-    }
-
-    fn to_source_pos_checked(&self, pos: Self::Coordinates) -> (Self::SourceCoordinates, bool) {
-        (self.to_source_pos(pos), self.is_in_bounds(pos))
-    }
-}
-
-/// Dummy layout for launching, to be exited out later with `as_tensor_map`.
-#[derive(CubeType, CubeLaunch)]
-pub struct TmaDummyLayout {}
-
-#[cube]
-impl Layout for TmaDummyLayout {
-    type Coordinates = Coords3d;
-    type SourceCoordinates = Coords3d;
-
-    fn to_source_pos(&self, pos: Self::Coordinates) -> Self::SourceCoordinates {
-        pos
     }
 
     fn is_in_bounds(&self, _pos: Self::Coordinates) -> bool {

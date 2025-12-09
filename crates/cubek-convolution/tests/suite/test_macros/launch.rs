@@ -2,11 +2,11 @@
 macro_rules! testgen_convolution_launch {
     ($algorithm: ty, $precision: ty, $selection: expr, $problem: expr) => {
         use super::*;
-        use $crate::suite::test_algo;
+        use $crate::suite::test_macros::suite::test_algo;
 
         #[test]
         pub fn test() {
-            test_algo::<$algorithm, $precision, TestRuntime>($selection, $problem);
+            test_algo::<$algorithm, $precision, cubecl::TestRuntime>($selection, $problem);
         }
     };
 }

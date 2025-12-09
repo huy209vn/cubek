@@ -3,14 +3,11 @@ use cubecl::std::{
     FastDivmod, FastDivmodArgs,
     tensor::layout::{Coords3d, Layout, LayoutExpand},
 };
-use cubek_matmul::components::{
-    MatmulElems,
-    global::{GlobalConfig, memory::GlobalMemoryConfig},
-};
+use cubek_matmul::components::global::{GlobalConfig, memory::GlobalMemoryConfig};
 
 use crate::components::{
     ConvGemmConfig, ConvolutionConfig, ConvolutionParams, ConvolutionProblem,
-    global::{args::RuntimeArgs, layout::NhwcCoords, read::im2col_tma::div_mod_seq},
+    global::layout::{NhwcCoords, div_mod_seq},
 };
 
 /// Maps a 4D NHWC tensor to a 2D column matrix using the im2col transformation
@@ -39,15 +36,17 @@ pub struct Im2colLayout {
 #[cube]
 impl Im2colLayout {
     pub fn new<G: GlobalConfig>(
-        args: &RuntimeArgs,
+        shape_m: u32,
+        shape_k: u32,
+        padded_channels: FastDivmod,
         shape_out: Sequence<FastDivmod>,
         #[comptime] config: ConvolutionConfig<G>,
     ) -> Im2colLayout {
         Im2colLayout {
             shape_out,
-            padded_channels: args.padded_channels,
-            shape_m: args.shape_m,
-            shape_k: args.shape_k,
+            padded_channels,
+            shape_m,
+            shape_k,
             params: config.convolution_params,
             config: config.lhs_global_memory_config(),
         }
@@ -116,19 +115,15 @@ impl<'a, R: Runtime> Im2colLayoutLaunch<'a, R> {
     pub fn from_args(
         client: &ComputeClient<R>,
         problem: &ConvolutionProblem,
+        padded_channels: u32,
         params: ConvolutionParams,
         config: GlobalMemoryConfig,
-        dtypes: &MatmulElems,
     ) -> Self {
         let shape_out = problem
             .out_shape
             .iter()
             .map(|s| FastDivmodArgs::new(client, *s as u32))
             .collect();
-
-        let load_width = client.properties().hardware.load_width;
-        let channel_align = load_width / dtypes.lhs_global.size_bits() as u32;
-        let padded_channels = (problem.channels as u32).next_multiple_of(channel_align);
 
         let size_k = problem.kernel_size.iter().product::<u32>() * padded_channels;
         let padded_channels = FastDivmodArgs::new(client, padded_channels);

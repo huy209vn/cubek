@@ -8,10 +8,11 @@ macro_rules! testgen_convolution_advanced {
 
         mod _advanced {
             use super::*;
+            use cubecl::Runtime;
 
             pub fn get_selection_builder() -> MatmulSelectionBuilder {
                 let tiling_scheme = $tiling_scheme_builder.build().unwrap();
-                let client = TestRuntime::client(&Default::default());
+                let client = cubecl::TestRuntime::client(&Default::default());
                 let plane_dim = client.properties().hardware.plane_size_max;
                 MatmulSelection::builder(tiling_scheme, plane_dim)
             }

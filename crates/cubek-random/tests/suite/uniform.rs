@@ -10,7 +10,7 @@ fn values_all_within_interval_uniform() {
     let output_data = get_random_uniform_data(shape, 5., 17.);
 
     for e in output_data {
-        assert!(e >= 5. && e < 17., "Not in range, got {}", e);
+        assert!((5. ..17.).contains(&e), "Not in range, got {}", e);
     }
 }
 

@@ -1,6 +1,6 @@
 use cubecl;
 use cubecl::prelude::*;
-use cubecl::std::{CubeOption, CubeOptionExpand, FastDivmod, FastDivmodArgs};
+use cubecl::std::{CubeOption, CubeOptionExpand};
 use cubecl::{Runtime, client::ComputeClient};
 use cubek_matmul::components::MatmulElems;
 use cubek_matmul::components::global::GlobalConfig;
@@ -9,10 +9,10 @@ use cubek_matmul::components::{
     InputRuntimeArg, OutputRuntimeArg, batch::SliceIndex, global::args::MatmulArgs,
 };
 
-use crate::components::{ConvGemmConfig, global::args::RuntimeArgs};
+use crate::components::global::{GlobalConvolution, GlobalConvolutionFamily};
 use crate::components::{
-    ConvolutionProblem,
-    global::{GlobalConvolution, GlobalConvolutionFamily},
+    ConvGemmConfig,
+    global::args::{RuntimeArgs, RuntimeArgsLaunch},
 };
 
 type Input<Args, Lhs, Rhs, EO> = <Args as MatmulArgs>::Input<Lhs, Rhs, EO>;
@@ -32,7 +32,7 @@ pub trait ConvolutionLaunch<Config> {
         cube_count: CubeCount,
         input: InputRuntimeArg<'a, MA, R>,
         output: OutputRuntimeArg<'a, MA, R>,
-        problem: &ConvolutionProblem,
+        runtime_args: RuntimeArgsLaunch<'a, R>,
         config: Config,
         dtypes: &MatmulElems,
     ) -> Result<(), LaunchError>;
@@ -126,14 +126,4 @@ pub(crate) fn implicit_conv<
         k_range,
         config,
     );
-}
-
-pub(crate) fn shape_divmod<'a, R: Runtime>(
-    client: &ComputeClient<R>,
-    shape: &[usize],
-) -> SequenceArg<'a, R, FastDivmod> {
-    shape
-        .iter()
-        .map(|s| FastDivmodArgs::new(client, *s as u32))
-        .collect()
 }

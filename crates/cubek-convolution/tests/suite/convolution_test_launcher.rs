@@ -104,7 +104,7 @@ pub fn test_convolution_algorithm<A, P, R>(
     let rhs_handle =
         MatmulInputHandleRef::new(rhs_handle.as_ref(), P::EG::as_type_native_unchecked());
 
-    let inputs = <InputArg<A::Args> as ConcreteInputsFactory>::create(
+    let (inputs, runtime_args) = <InputArg<A::Args> as ConcreteInputsFactory>::create(
         &client,
         &lhs_handle,
         &rhs_handle,
@@ -134,7 +134,7 @@ pub fn test_convolution_algorithm<A, P, R>(
             A::cube_count(&selection, &problem),
             inputs,
             output,
-            &problem,
+            runtime_args,
             config,
             &dtypes,
         )

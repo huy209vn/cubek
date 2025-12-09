@@ -113,8 +113,8 @@ impl<EG: Numeric, ES: Numeric> LoadingJob<EG, ES, TmaTilingLayout, AsyncTma> for
             };
 
             let global_view = global_iter.view();
-            let mut stage = stage.as_slice_mut(1u32);
-            let slice_size = size_row * size_col;
+            let mut stage = stage.as_slice_mut(stage.smem.line_size());
+            let slice_size = size_row * size_col / stage.line_size();
 
             let slice_start = task_id * slice_size;
             let slice = stage.slice_mut(slice_start, slice_start + slice_size);

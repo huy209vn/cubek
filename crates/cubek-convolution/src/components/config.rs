@@ -12,7 +12,7 @@ use super::*;
 
 /// Convolution specific config, extends regular matmul `Config`.
 pub trait ConvGemmConfig:
-    Copy + Clone + Eq + PartialEq + Hash + Debug + Send + Sync + 'static
+    Deref<Target: GlobalConfig> + Copy + Clone + Eq + PartialEq + Hash + Debug + Send + Sync + 'static
 {
     type GlobalMatmulConfig: GlobalConfig;
 
@@ -42,6 +42,25 @@ pub struct ConvolutionParams {
     pub dilation: [u32; 3],
     pub padding: [i32; 3],
     pub dimensionality: Dimensionality,
+}
+
+impl ConvolutionParams {
+    pub fn from_problem(problem: &ConvolutionProblem) -> Self {
+        let dims = problem.dimensionality.num_dims() as usize;
+
+        let mut params = ConvolutionParams {
+            kernel_size: [0; 3],
+            stride: [0; 3],
+            dilation: [0; 3],
+            padding: [0; 3],
+            dimensionality: problem.dimensionality,
+        };
+        params.kernel_size[0..dims].copy_from_slice(&problem.kernel_size);
+        params.stride[0..dims].copy_from_slice(&problem.stride);
+        params.dilation[0..dims].copy_from_slice(&problem.dilation);
+        params.padding[0..dims].copy_from_slice(&problem.padding);
+        params
+    }
 }
 
 impl<M: GlobalConfig> Deref for ConvolutionConfig<M> {

@@ -3,14 +3,11 @@ use cubecl::std::{
     FastDivmod, FastDivmodArgs,
     tensor::layout::{Coords3d, Layout, LayoutExpand},
 };
-use cubek_matmul::components::{
-    MatmulElems,
-    global::{GlobalConfig, memory::GlobalMemoryConfig},
-};
+use cubek_matmul::components::global::{GlobalConfig, memory::GlobalMemoryConfig};
 
 use crate::components::{
     ConvGemmConfig, ConvolutionConfig, ConvolutionParams, ConvolutionProblem,
-    global::{args::RuntimeArgs, layout::NhwcCoords},
+    global::layout::NhwcCoords,
 };
 
 /// Maps a 4D weight tensor of shape `(out_c, (k_h, k_w, in_c))` to a col-major 2D matmul tile with
@@ -36,13 +33,15 @@ pub struct WeightLayout {
 #[cube]
 impl WeightLayout {
     pub fn new<E: Numeric, G: GlobalConfig>(
-        args: &RuntimeArgs,
+        shape_k: u32,
+        shape_n: u32,
+        padded_channels: FastDivmod,
         #[comptime] config: ConvolutionConfig<G>,
     ) -> WeightLayout {
         WeightLayout {
-            shape_k: args.shape_k,
-            shape_n: args.shape_n,
-            padded_channels: args.padded_channels,
+            shape_k,
+            shape_n,
+            padded_channels,
             params: config.convolution_params,
             config: config.rhs_global_memory_config(),
         }
@@ -102,14 +101,10 @@ impl<'a, R: Runtime> WeightLayoutLaunch<'a, R> {
     pub fn from_args(
         client: &ComputeClient<R>,
         problem: &ConvolutionProblem,
+        padded_channels: u32,
         params: ConvolutionParams,
         config: GlobalMemoryConfig,
-        dtypes: &MatmulElems,
     ) -> Self {
-        let load_width = client.properties().hardware.load_width;
-        let channel_align = load_width / dtypes.lhs_global.size_bits() as u32;
-        let padded_channels = (problem.channels as u32).next_multiple_of(channel_align);
-
         let size_k = problem.kernel_size.iter().product::<u32>() * padded_channels;
         let padded_channels = FastDivmodArgs::new(client, padded_channels);
         let shape_k = ScalarArg::new(size_k);

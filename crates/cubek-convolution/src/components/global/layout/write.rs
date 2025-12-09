@@ -7,11 +7,7 @@ use cubek_matmul::components::global::memory::GlobalMemoryConfig;
 
 use crate::components::{
     ConvolutionProblem,
-    global::{
-        args::RuntimeArgs,
-        layout::{NhwcCoords, cast_seq},
-        read::im2col_tma::div_mod_seq,
-    },
+    global::layout::{NhwcCoords, cast_seq, div_mod_seq},
 };
 
 /// Maps a 4D NHWC out tensor of shape `((n, h, w), c)` to a col-major 2D matmul tile with
@@ -34,14 +30,15 @@ pub struct OutLayout {
 #[cube]
 impl OutLayout {
     pub fn new(
-        args: &RuntimeArgs,
+        shape_m: u32,
+        shape_n: u32,
         shape_out: Sequence<FastDivmod>,
         #[comptime] config: GlobalMemoryConfig,
     ) -> OutLayout {
         OutLayout {
             shape_out,
-            shape_m: args.shape_m,
-            shape_n: args.shape_n,
+            shape_m,
+            shape_n,
             config,
         }
     }

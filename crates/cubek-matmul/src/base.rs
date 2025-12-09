@@ -16,7 +16,7 @@ use crate::{
     components::{
         MatmulElems, MatmulSetupError,
         global::read::{
-            async_partial_cyclic::AsyncPartialCyclicLoading,
+            async_full_strided, async_partial_cyclic::AsyncPartialCyclicLoading,
             async_partial_strided::AsyncPartialStridedLoading,
         },
         tile::{cmma::CmmaMatmul, io::Filled, mma::MmaMatmul},
@@ -35,9 +35,7 @@ use crate::{
 
 use super::{
     components::{
-        global::read::{
-            async_full_cooperative, async_full_cyclic, sync_full_strided, sync_full_tilewise,
-        },
+        global::read::{async_full_cyclic, sync_full_strided, sync_full_tilewise},
         stage::{ColMajorTilingOrder, RowMajorTilingOrder},
     },
     kernels::{
@@ -212,8 +210,8 @@ pub enum ReadingStrategy {
     Cyclic,
     Strided,
     Tilewise,
-    AsyncCooperative,
     AsyncCyclic,
+    AsyncStrided,
     Tma,
 }
 
@@ -261,8 +259,8 @@ impl Display for ReadingStrategy {
             ReadingStrategy::Cyclic => f.write_str("cyclic"),
             ReadingStrategy::Strided => f.write_str("strided"),
             ReadingStrategy::Tilewise => f.write_str("tilewise"),
-            ReadingStrategy::AsyncCooperative => f.write_str("async_cooperative"),
             ReadingStrategy::AsyncCyclic => f.write_str("async_cyclic"),
+            ReadingStrategy::AsyncStrided => f.write_str("async_strided"),
             ReadingStrategy::Tma => f.write_str("tma"),
         }
     }
@@ -605,13 +603,13 @@ pub fn launch_ref<R: Runtime>(
                     >,
                 >(client, lhs, rhs, out, selection, dtypes)
             }
-            ReadingStrategy::AsyncCooperative => {
+            ReadingStrategy::AsyncStrided => {
                 layered::launch_ref::<
                     R,
                     SimpleAlgorithm<
                         Accelerated,
-                        async_full_cooperative::AsyncFullCooperativeLoading,
-                        async_full_cooperative::AsyncFullCooperativeLoading,
+                        async_full_strided::AsyncFullStridedLoading,
+                        async_full_strided::AsyncFullStridedLoading,
                     >,
                 >(client, lhs, rhs, out, selection, dtypes)
             }

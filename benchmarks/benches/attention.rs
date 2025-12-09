@@ -1,6 +1,8 @@
+#![allow(unused, clippy::extra_unused_type_parameters)]
+
 use cubecl::{
     Runtime,
-    benchmark::{Benchmark, ProfileDuration, TimingMethod},
+    benchmark::{Benchmark, ProfileDuration},
     client::ComputeClient,
     future,
     prelude::*,
@@ -11,7 +13,7 @@ use cubek::{
         self as attention, Strategy,
         components::{
             AttentionElems, AttentionIdent, AttentionPrecision, AttentionProblem,
-            AttentionProblemDims,
+            AttentionStorageTypes,
             attention_types::{KG, MSK, OG, QG, VG},
         },
     },

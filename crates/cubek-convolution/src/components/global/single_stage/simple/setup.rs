@@ -76,9 +76,13 @@ where
             dtypes,
         )?;
 
-        // TODO: Find the correct condition to avoid check bounds.
-        let check_m_bounds = true;
-        let check_n_bounds = true;
+        let stage_size_m = stage_config.elements_in_stage_m() as usize;
+        let stage_size_n = stage_config.elements_in_stage_n() as usize;
+
+        // k is tricky and is handled specially by different loaders so always check for now.
+        // m and n don't have padding so checks work as normal.
+        let check_m_bounds = !problem.m.is_multiple_of(stage_size_m);
+        let check_n_bounds = !problem.n.is_multiple_of(stage_size_n);
         let check_k_bounds = true;
 
         let plane_role_config = stage_config.plane_role_config();

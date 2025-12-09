@@ -1,22 +1,16 @@
-use cubecl::std::FastDivmodArgs;
-use cubecl::{
-    CubeCount, CubeDim, Runtime, client::ComputeClient, prelude::ScalarArg, server::LaunchError,
-};
+use cubecl::{CubeCount, CubeDim, Runtime, client::ComputeClient, server::LaunchError};
 use cubek_matmul::components::{
     InputRuntimeArg, MatmulElems, OutputRuntimeArg,
     global::{PartitionedStageFamily, args::MatmulArgs},
     stage::{StageMatmulFamily, StridedStageFamily},
 };
 
-use crate::components::{
-    ConvolutionProblem,
-    global::{
-        GlobalConfig,
-        args::RuntimeArgsLaunch,
-        entry_point::{ConvolutionLaunch, implicit_conv, shape_divmod},
-        read::full_reader::FullLoadingStrategy,
-        single_stage::simple::SimpleConvolutionFamily,
-    },
+use crate::components::global::{
+    GlobalConfig,
+    args::RuntimeArgsLaunch,
+    entry_point::{ConvolutionLaunch, implicit_conv},
+    read::full_reader::FullLoadingStrategy,
+    single_stage::simple::SimpleConvolutionFamily,
 };
 
 impl<
@@ -36,26 +30,10 @@ impl<
         cube_count: CubeCount,
         input: InputRuntimeArg<'a, MA, R>,
         output: OutputRuntimeArg<'a, MA, R>,
-        problem: &ConvolutionProblem,
+        runtime_args: RuntimeArgsLaunch<'a, R>,
         config: GlobalConfig<Self>,
         dtypes: &MatmulElems,
     ) -> Result<(), LaunchError> {
-        let load_width = client.properties().hardware.load_width;
-        let channel_align = load_width / dtypes.lhs_global.size_bits() as u32;
-        let padded_channels = (problem.channels as u32).next_multiple_of(channel_align);
-
-        let size_k = problem.kernel_size.iter().product::<u32>() * padded_channels;
-        let padded_channels = FastDivmodArgs::new(client, padded_channels);
-
-        let runtime_args = RuntimeArgsLaunch::new(
-            ScalarArg::new(problem.m as u32),
-            ScalarArg::new(problem.n as u32),
-            ScalarArg::new(size_k),
-            ScalarArg::new(problem.channels as u32),
-            padded_channels,
-            shape_divmod(client, &problem.out_shape),
-        );
-
         unsafe {
             implicit_conv::launch_unchecked::<MA, Self, R>(
                 client,

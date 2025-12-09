@@ -1,7 +1,7 @@
 #[macro_export]
 macro_rules! testgen_convolution_problem_size {
     ($algorithm: ty, $precision: ty, $selection: expr) => {
-        use $crate::tests::ConvolutionSize;
+        use $crate::suite::test_macros::suite::ConvolutionSize;
 
         mod g4x4x1x1 {
             use super::*;

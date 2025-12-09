@@ -1,3 +1,5 @@
+use std::marker::PhantomData;
+
 use cubecl::prelude::*;
 use cubecl::std::{
     CubeOption, CubeOptionArgs, CubeOptionExpand,
@@ -477,9 +479,9 @@ impl<Lhs: Numeric, Rhs: Numeric, EO: Numeric> ConcreteInputsFactory
         };
 
         let meta_lhs = TensorMapMeta {
-            format: TensorMapFormat::Tiled {
+            format: TensorMapFormat::Tiled(TiledArgs {
                 tile_size: stage_size_lhs,
-            },
+            }),
             rank: 3,
             shape: lhs_shape.clone(),
             strides: lhs_strides,
@@ -492,9 +494,9 @@ impl<Lhs: Numeric, Rhs: Numeric, EO: Numeric> ConcreteInputsFactory
         };
 
         let meta_rhs = TensorMapMeta {
-            format: TensorMapFormat::Tiled {
+            format: TensorMapFormat::Tiled(TiledArgs {
                 tile_size: stage_size_rhs,
-            },
+            }),
             rank: 3,
             shape: rhs_shape.clone(),
             strides: rhs_strides,
@@ -509,10 +511,12 @@ impl<Lhs: Numeric, Rhs: Numeric, EO: Numeric> ConcreteInputsFactory
         let lhs = TensorMapArg {
             tensor: lhs.as_tensor_arg(line_sizes.lhs),
             metadata: meta_lhs,
+            _kind: PhantomData,
         };
         let rhs = TensorMapArg {
             tensor: rhs.as_tensor_arg(line_sizes.rhs),
             metadata: meta_rhs,
+            _kind: PhantomData,
         };
 
         let view = |buffer, shape: &[usize], transposed| {
@@ -529,7 +533,7 @@ impl<Lhs: Numeric, Rhs: Numeric, EO: Numeric> ConcreteInputsFactory
             };
             let shape = (batches, rows, cols);
             let layout = SimpleTmaGlobalLayoutLaunch::new(transposed, shape);
-            ViewArg::new_tensor_map::<SimpleTmaGlobalLayout>(buffer, layout)
+            ViewArg::new_tensor_map_tiled::<SimpleTmaGlobalLayout>(buffer, layout)
         };
 
         TensorMapInputsLaunch::new(

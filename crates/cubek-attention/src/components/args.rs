@@ -106,19 +106,19 @@ pub trait AttentionArgs: Send + Sync + 'static + Clone {
     /// Reinterpret query as tensor map
     fn as_tensor_map_query<Q: Float, K: Float, V: Float, M: Numeric, O: Float>(
         state: &Self::State<Q, K, V, M, O>,
-    ) -> CubeOption<TensorMap<Q>>;
+    ) -> CubeOption<TensorMap<Q, Tiled>>;
     /// Reinterpret key as tensor map
     fn as_tensor_map_key<Q: Float, K: Float, V: Float, M: Numeric, O: Float>(
         state: &Self::State<Q, K, V, M, O>,
-    ) -> CubeOption<TensorMap<K>>;
+    ) -> CubeOption<TensorMap<K, Tiled>>;
     /// Reinterpret value as tensor map
     fn as_tensor_map_value<Q: Float, K: Float, V: Float, M: Numeric, O: Float>(
         state: &Self::State<Q, K, V, M, O>,
-    ) -> CubeOption<TensorMap<V>>;
+    ) -> CubeOption<TensorMap<V, Tiled>>;
     /// Reinterpret mask as tensor map
     fn as_tensor_map_mask<Q: Float, K: Float, V: Float, M: Numeric, O: Float>(
         state: &Self::State<Q, K, V, M, O>,
-    ) -> CubeOption<TensorMap<M>>;
+    ) -> CubeOption<TensorMap<M, Tiled>>;
 
     /// Write the line to the output at the given coordinate using the state.
     fn write_out<Q: Float, K: Float, V: Float, M: Numeric, O: Float>(
@@ -365,7 +365,10 @@ impl<Q: Float, K: Float, V: Float, M: Numeric, O: Float, MA: AttentionArgs>
         TensorOutputExpand::__expand_buffer_len_method(self.clone(), scope)
     }
 
-    fn __expand_as_tensor_map_method(&self, scope: &mut Scope) -> CubeOptionExpand<TensorMap<O>> {
+    fn __expand_as_tensor_map_method(
+        &self,
+        scope: &mut Scope,
+    ) -> CubeOptionExpand<TensorMap<O, Tiled>> {
         CubeOption::__expand_new_None(scope)
     }
 }
@@ -439,7 +442,10 @@ impl<Q: Float, K: Float, V: Float, M: Numeric, O: Float, MA: AttentionArgs>
         TensorQueryExpand::__expand_buffer_len_method(self.clone(), scope)
     }
 
-    fn __expand_as_tensor_map_method(&self, scope: &mut Scope) -> CubeOptionExpand<TensorMap<Q>> {
+    fn __expand_as_tensor_map_method(
+        &self,
+        scope: &mut Scope,
+    ) -> CubeOptionExpand<TensorMap<Q, Tiled>> {
         TensorQueryExpand::__expand_as_tensor_map_method(self.clone(), scope)
     }
 }
@@ -513,7 +519,10 @@ impl<Q: Float, K: Float, V: Float, M: Numeric, O: Float, MA: AttentionArgs>
         TensorKeyExpand::__expand_buffer_len_method(self.clone(), scope)
     }
 
-    fn __expand_as_tensor_map_method(&self, scope: &mut Scope) -> CubeOptionExpand<TensorMap<K>> {
+    fn __expand_as_tensor_map_method(
+        &self,
+        scope: &mut Scope,
+    ) -> CubeOptionExpand<TensorMap<K, Tiled>> {
         TensorKeyExpand::__expand_as_tensor_map_method(self.clone(), scope)
     }
 }
@@ -587,7 +596,10 @@ impl<Q: Float, K: Float, V: Float, M: Numeric, O: Float, MA: AttentionArgs>
         TensorValueExpand::__expand_buffer_len_method(self.clone(), scope)
     }
 
-    fn __expand_as_tensor_map_method(&self, scope: &mut Scope) -> CubeOptionExpand<TensorMap<V>> {
+    fn __expand_as_tensor_map_method(
+        &self,
+        scope: &mut Scope,
+    ) -> CubeOptionExpand<TensorMap<V, Tiled>> {
         TensorValueExpand::__expand_as_tensor_map_method(self.clone(), scope)
     }
 }
@@ -661,7 +673,10 @@ impl<Q: Float, K: Float, V: Float, M: Numeric, O: Float, MA: AttentionArgs>
         TensorMaskExpand::__expand_buffer_len_method(self.clone(), scope)
     }
 
-    fn __expand_as_tensor_map_method(&self, scope: &mut Scope) -> CubeOptionExpand<TensorMap<M>> {
+    fn __expand_as_tensor_map_method(
+        &self,
+        scope: &mut Scope,
+    ) -> CubeOptionExpand<TensorMap<M, Tiled>> {
         TensorMaskExpand::__expand_as_tensor_map_method(self.clone(), scope)
     }
 }
@@ -762,7 +777,7 @@ impl<Q: Float, K: Float, V: Float, M: Numeric, O: Float, MA: AttentionArgs>
     }
 
     /// Get the buffer length of the tensor.
-    pub fn as_tensor_map(&self) -> CubeOption<TensorMap<Q>> {
+    pub fn as_tensor_map(&self) -> CubeOption<TensorMap<Q, Tiled>> {
         unsafe { MA::as_tensor_map_query(&(*self.state)) }
     }
 
@@ -818,7 +833,7 @@ impl<Q: Float, K: Float, V: Float, M: Numeric, O: Float, MA: AttentionArgs>
     }
 
     /// Get the buffer length of the tensor.
-    pub fn as_tensor_map(&self) -> CubeOption<TensorMap<K>> {
+    pub fn as_tensor_map(&self) -> CubeOption<TensorMap<K, Tiled>> {
         unsafe { MA::as_tensor_map_key(&(*self.state)) }
     }
 
@@ -874,7 +889,7 @@ impl<Q: Float, K: Float, V: Float, M: Numeric, O: Float, MA: AttentionArgs>
     }
 
     /// Get the buffer length of the tensor.
-    pub fn as_tensor_map(&self) -> CubeOption<TensorMap<V>> {
+    pub fn as_tensor_map(&self) -> CubeOption<TensorMap<V, Tiled>> {
         unsafe { MA::as_tensor_map_value(&(*self.state)) }
     }
 
@@ -930,7 +945,7 @@ impl<Q: Float, K: Float, V: Float, M: Numeric, O: Float, MA: AttentionArgs>
     }
 
     /// Get the buffer length of the tensor.
-    pub fn as_tensor_map(&self) -> CubeOption<TensorMap<M>> {
+    pub fn as_tensor_map(&self) -> CubeOption<TensorMap<M, Tiled>> {
         unsafe { MA::as_tensor_map_mask(&(*self.state)) }
     }
 
@@ -1141,25 +1156,25 @@ impl AttentionArgs for TensorArgs {
 
     fn as_tensor_map_query<Q: Float, K: Float, V: Float, M: Numeric, O: Float>(
         _state: &Self::State<Q, K, V, M, O>,
-    ) -> CubeOption<TensorMap<Q>> {
+    ) -> CubeOption<TensorMap<Q, Tiled>> {
         CubeOption::new_None()
     }
 
     fn as_tensor_map_key<Q: Float, K: Float, V: Float, M: Numeric, O: Float>(
         _state: &Self::State<Q, K, V, M, O>,
-    ) -> CubeOption<TensorMap<K>> {
+    ) -> CubeOption<TensorMap<K, Tiled>> {
         CubeOption::new_None()
     }
 
     fn as_tensor_map_value<Q: Float, K: Float, V: Float, M: Numeric, O: Float>(
         _state: &Self::State<Q, K, V, M, O>,
-    ) -> CubeOption<TensorMap<V>> {
+    ) -> CubeOption<TensorMap<V, Tiled>> {
         CubeOption::new_None()
     }
 
     fn as_tensor_map_mask<Q: Float, K: Float, V: Float, M: Numeric, O: Float>(
         _state: &Self::State<Q, K, V, M, O>,
-    ) -> CubeOption<TensorMap<M>> {
+    ) -> CubeOption<TensorMap<M, Tiled>> {
         CubeOption::new_None()
     }
 

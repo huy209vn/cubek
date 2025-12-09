@@ -8,7 +8,7 @@ macro_rules! testgen_matmul_simple {
         }
     };
     ($float:ident) => {
-            use crate::suite::naive;
+            use $crate::suite::naive;
 
             pub type FloatT = $float;
             type TestRuntime = cubecl::TestRuntime;

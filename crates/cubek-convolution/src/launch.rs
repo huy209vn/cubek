@@ -1,4 +1,4 @@
-use crate::components::ConvGemmConfig as _;
+use crate::{components::ConvGemmConfig as _, kernels::layered::simple::*};
 use crate::{components::ConvSetupError, kernels::layered::selector::launch_kernel_concrete};
 use crate::{
     components::{
@@ -7,18 +7,75 @@ use crate::{
     },
     kernels::layered::algorithm::Algorithm,
 };
-use cubecl::{Runtime, client::ComputeClient, prelude::*};
-use cubek_matmul::components::{self, AvailableLineSizes, MatmulElems, MatrixLayout};
+use cubecl::{
+    Runtime,
+    client::ComputeClient,
+    prelude::*,
+    std::{CubeOption, tensor::TensorHandle},
+};
+use cubek_matmul::{
+    AcceleratedTileKind, MatmulInputHandle, ReadingStrategy,
+    components::{
+        self, AvailableLineSizes, MatmulElems, MatrixLayout,
+        tile::{cmma::CmmaMatmul, io::Strided, mma::MmaMatmul},
+    },
+};
 use cubek_matmul::{
     MatmulInputHandleRef,
     components::{InputArg, OutputArg},
 };
+use derive_new::new;
 
 #[derive(Clone)]
 pub struct ConvolutionArgs<const N_SPATIAL: usize> {
     pub stride: [usize; N_SPATIAL],
     pub padding: [usize; N_SPATIAL],
     pub dilation: [usize; N_SPATIAL],
+}
+
+pub enum Strategy {
+    Simple {
+        read_strategy: ReadingStrategy,
+        tile_kind: AcceleratedTileKind,
+    },
+}
+
+macro_rules! with_tile_kind {
+    ($kind: expr, $T: ident, $launch: expr) => {
+        match $kind {
+            AcceleratedTileKind::Cmma => {
+                type $T = CmmaMatmul<CubeOption<Strided>>;
+                ($launch)()
+            }
+            AcceleratedTileKind::Mma => {
+                type $T = MmaMatmul<Strided, Strided, CubeOption<Strided>>;
+                ($launch)()
+            }
+        }
+    };
+}
+
+#[allow(clippy::result_large_err, clippy::too_many_arguments)]
+pub fn launch<R: Runtime, const N_SPATIAL: usize>(
+    strategy: &Strategy,
+    client: &ComputeClient<R>,
+    input: MatmulInputHandle<R>,
+    weight: MatmulInputHandle<R>,
+    bias: Option<MatmulInputHandle<R>>,
+    out: TensorHandle<R>,
+    args: ConvolutionArgs<N_SPATIAL>,
+    dtypes: MatmulElems,
+) -> Result<(), ConvSetupError> {
+    launch_ref(
+        strategy,
+        client,
+        &input.as_ref(),
+        &weight.as_ref(),
+        &bias.as_ref().map(|it| it.as_ref()),
+        &out.as_ref(),
+        args,
+        dtypes,
+    )
 }
 
 /// Perform an n-dimensional convolution using the implicit GEMM (im2col) algorithm, using cubecl
@@ -29,51 +86,83 @@ pub struct ConvolutionArgs<const N_SPATIAL: usize> {
 /// * `out` - The output feature map, layout should be [batches, out_depth, out_height, out_width, out_channels]
 /// * `bias` - The bias added to each out channel
 /// * `options` - The options to use for the convolution
-#[allow(clippy::result_large_err)]
-pub fn launch_conv<R: Runtime, Alg: Algorithm, const N_SPATIAL: usize>(
+#[allow(clippy::result_large_err, clippy::too_many_arguments)]
+pub fn launch_ref<R: Runtime, const N_SPATIAL: usize>(
+    strategy: &Strategy,
     client: &ComputeClient<R>,
     input: &MatmulInputHandleRef<'_, R>,
     weight: &MatmulInputHandleRef<'_, R>,
-    bias: &Option<TensorHandleRef<'_, R>>,
+    bias: &Option<MatmulInputHandleRef<'_, R>>,
     out: &TensorHandleRef<'_, R>,
     args: ConvolutionArgs<N_SPATIAL>,
     dtypes: MatmulElems,
-) -> Result<(), ConvSetupError>
-where
-    InputArg<Alg::Args>: ConcreteInputsFactory,
-    OutputArg<Alg::Args>: ConcreteOutputFactory,
-{
-    let ConvolutionArgs {
-        stride,
-        padding,
-        dilation,
-    } = args;
+) -> Result<(), ConvSetupError> {
+    let conv = Convolution::new(client, input, weight, bias, out, args, dtypes);
 
-    let dimensionality = match N_SPATIAL {
-        1 => Dimensionality::Dim1,
-        2 => Dimensionality::Dim2,
-        3 => Dimensionality::Dim3,
-        other => unimplemented!("Unsupported dimensionality {other}"),
-    };
+    match strategy {
+        Strategy::Simple {
+            read_strategy,
+            tile_kind,
+        } => with_tile_kind!(tile_kind, Accelerated, || match read_strategy {
+            ReadingStrategy::Cyclic => conv.launch::<SimpleSyncCyclicConv<Accelerated>>(),
+            ReadingStrategy::Strided => conv.launch::<SimpleSyncStridedConv<Accelerated>>(),
+            ReadingStrategy::Tilewise => conv.launch::<SimpleSyncTilewiseConv<Accelerated>>(),
+            ReadingStrategy::AsyncCyclic => conv.launch::<SimpleAsyncCyclicConv<Accelerated>>(),
+            ReadingStrategy::AsyncStrided => conv.launch::<SimpleAsyncStridedConv<Accelerated>>(),
+            ReadingStrategy::Tma => conv.launch::<SimpleAsyncTmaConv<Accelerated>>(),
+        }),
+    }
+}
 
-    launch::<R, Alg>(
-        client,
-        input,
-        weight,
-        bias,
-        out,
-        (&stride, &padding, &dilation),
-        dimensionality,
-        dtypes,
-    )
+#[derive(new)]
+struct Convolution<'a, R: Runtime, const N_SPATIAL: usize> {
+    client: &'a ComputeClient<R>,
+    input: &'a MatmulInputHandleRef<'a, R>,
+    weight: &'a MatmulInputHandleRef<'a, R>,
+    bias: &'a Option<MatmulInputHandleRef<'a, R>>,
+    out: &'a TensorHandleRef<'a, R>,
+    args: ConvolutionArgs<N_SPATIAL>,
+    dtypes: MatmulElems,
+}
+
+impl<'a, R: Runtime, const N_SPATIAL: usize> Convolution<'a, R, N_SPATIAL> {
+    fn launch<Alg: Algorithm>(self) -> Result<(), ConvSetupError>
+    where
+        InputArg<Alg::Args>: ConcreteInputsFactory,
+        OutputArg<Alg::Args>: ConcreteOutputFactory,
+    {
+        let ConvolutionArgs {
+            stride,
+            padding,
+            dilation,
+        } = self.args;
+
+        let dimensionality = match N_SPATIAL {
+            1 => Dimensionality::Dim1,
+            2 => Dimensionality::Dim2,
+            3 => Dimensionality::Dim3,
+            other => unimplemented!("Unsupported dimensionality {other}"),
+        };
+
+        launch_with_algorithm::<R, Alg>(
+            self.client,
+            self.input,
+            self.weight,
+            self.bias,
+            self.out,
+            (&stride, &padding, &dilation),
+            dimensionality,
+            self.dtypes,
+        )
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn launch<R: Runtime, Alg: Algorithm>(
+fn launch_with_algorithm<R: Runtime, Alg: Algorithm>(
     client: &ComputeClient<R>,
     input: &MatmulInputHandleRef<'_, R>,
     weight: &MatmulInputHandleRef<'_, R>,
-    bias: &Option<TensorHandleRef<'_, R>>,
+    bias: &Option<MatmulInputHandleRef<'_, R>>,
     out: &TensorHandleRef<'_, R>,
     (stride, padding, dilation): (&[usize], &[usize], &[usize]),
     dimensionality: Dimensionality,
@@ -133,7 +222,7 @@ pub fn launch_kernel<R: Runtime, Alg: Algorithm>(
     client: &ComputeClient<R>,
     input: &MatmulInputHandleRef<'_, R>,
     weight: &MatmulInputHandleRef<'_, R>,
-    bias: &Option<TensorHandleRef<'_, R>>,
+    bias: &Option<MatmulInputHandleRef<'_, R>>,
     out: &TensorHandleRef<'_, R>,
     problem: ConvolutionProblem,
     mut dtypes: MatmulElems,
