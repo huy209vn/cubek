@@ -1,17 +1,17 @@
-use crate::{BoundChecksInner, LineMode};
+use crate::{BoundChecksInner, LineMode, PlaneReduceLevel};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ReduceBlueprint {
     pub line_mode: LineMode,
     pub bound_checks: bool,
-    pub routine: ReduceBlueprintRoutine,
+    pub global: GlobalReduceBlueprint,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ReduceBlueprintRoutine {
+pub enum GlobalReduceBlueprint {
     /// A single unit reduces a full vector.
     FullUnit,
-    Plane(PlaneReduceBlueprint),
+    FullPlane(PlaneReduceBlueprint),
     Cube(CubeReduceBlueprint),
 }
 
@@ -25,4 +25,5 @@ pub struct CubeReduceBlueprint {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PlaneReduceBlueprint {
     pub bound_checks_inner: BoundChecksInner,
+    pub level: PlaneReduceLevel,
 }

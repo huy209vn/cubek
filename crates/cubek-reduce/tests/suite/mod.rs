@@ -89,6 +89,19 @@ macro_rules! testgen_reduce {
                 strategy: ReduceStrategy::FullPlane { level: PlaneReduceLevel::Plane },
             );
         }
+
+        mod full_plane_unit {
+            use super::*;
+
+            testgen_reduce!(
+                dtype: $dtype,
+                shape: $shape,
+                strides: $strides,
+                axis: $axis,
+                strategy: ReduceStrategy::FullPlane { level: PlaneReduceLevel::Unit },
+            );
+        }
+
         mod full_unit {
             use super::*;
 

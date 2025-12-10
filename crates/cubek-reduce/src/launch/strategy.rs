@@ -29,7 +29,7 @@ pub enum ReduceStrategy {
     },
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PlaneReduceLevel {
     Unit,
     Plane,

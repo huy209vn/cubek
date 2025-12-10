@@ -1,6 +1,6 @@
 use crate::{
     LineMode, ReduceInstruction, ReducePrecision,
-    routines::{ReduceBlueprint, ReduceBlueprintRoutine},
+    routines::{GlobalReduceBlueprint, ReduceBlueprint},
 };
 use cubecl::{prelude::*, std::tensor::r#virtual::VirtualTensor};
 
@@ -13,18 +13,18 @@ pub struct WriterConfig {
 
 impl WriterConfig {
     pub fn from_blueprint(blueprint: ReduceBlueprint) -> Self {
-        match blueprint.routine {
-            ReduceBlueprintRoutine::FullUnit => Self {
+        match blueprint.global {
+            GlobalReduceBlueprint::FullUnit => Self {
                 line_mode: blueprint.line_mode,
                 shared: false,
                 use_planes: false,
             },
-            ReduceBlueprintRoutine::Plane(..) => Self {
+            GlobalReduceBlueprint::FullPlane(..) => Self {
                 line_mode: blueprint.line_mode,
                 shared: false,
                 use_planes: true,
             },
-            ReduceBlueprintRoutine::Cube(cube) => Self {
+            GlobalReduceBlueprint::Cube(cube) => Self {
                 line_mode: blueprint.line_mode,
                 shared: true,
                 use_planes: cube.use_planes,

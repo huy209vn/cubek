@@ -4,7 +4,7 @@ use crate::{
         partition::{parallel::partition_parallel, perpendicular::partition_perpendicular},
         precision::ReducePrecision,
     },
-    routines::{ReduceBlueprint, ReduceBlueprintRoutine},
+    routines::{GlobalReduceBlueprint, ReduceBlueprint},
 };
 use cubecl::{prelude::*, std::tensor::r#virtual::VirtualTensor};
 
@@ -36,16 +36,16 @@ pub enum PartitionSplit {
 
 impl PartitionOption {
     fn new(blueprint: ReduceBlueprint) -> PartitionOption {
-        match blueprint.routine {
-            ReduceBlueprintRoutine::FullUnit => PartitionOption {
+        match blueprint.global {
+            GlobalReduceBlueprint::FullUnit => PartitionOption {
                 split: PartitionSplit::Unit,
                 line_mode: blueprint.line_mode,
             },
-            ReduceBlueprintRoutine::Plane(..) => PartitionOption {
+            GlobalReduceBlueprint::FullPlane(..) => PartitionOption {
                 split: PartitionSplit::Plane,
                 line_mode: blueprint.line_mode,
             },
-            ReduceBlueprintRoutine::Cube(..) => PartitionOption {
+            GlobalReduceBlueprint::Cube(..) => PartitionOption {
                 split: PartitionSplit::Cube,
                 line_mode: blueprint.line_mode,
             },

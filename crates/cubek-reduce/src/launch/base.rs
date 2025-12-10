@@ -5,7 +5,7 @@ use crate::{
     },
     launch::{ReduceLaunchInfo, ReduceStrategy},
     routines::{
-        CubeReduceBlueprint, PlaneReduceBlueprint, ReduceBlueprint, ReduceBlueprintRoutine,
+        CubeReduceBlueprint, GlobalReduceBlueprint, PlaneReduceBlueprint, ReduceBlueprint,
         reduce_kernel_virtual,
     },
 };
@@ -33,19 +33,20 @@ pub(crate) fn launch_reduce<Run: Runtime>(
     inst: ReduceOperationConfig,
 ) -> Result<(), LaunchError> {
     let routine = match strategy {
-        ReduceStrategy::FullUnit => ReduceBlueprintRoutine::FullUnit,
+        ReduceStrategy::FullUnit => GlobalReduceBlueprint::FullUnit,
         ReduceStrategy::FullPlane { level } => {
-            ReduceBlueprintRoutine::Plane(PlaneReduceBlueprint {
+            GlobalReduceBlueprint::FullPlane(PlaneReduceBlueprint {
                 bound_checks_inner: info.bound_checks_inner,
+                level,
             })
         }
         ReduceStrategy::FullCube { use_planes } => match use_planes {
-            true => ReduceBlueprintRoutine::Cube(CubeReduceBlueprint {
+            true => GlobalReduceBlueprint::Cube(CubeReduceBlueprint {
                 accumulator_size: info.cube_dim.y,
                 bound_checks_inner: info.bound_checks_inner,
                 use_planes,
             }),
-            false => ReduceBlueprintRoutine::Cube(CubeReduceBlueprint {
+            false => GlobalReduceBlueprint::Cube(CubeReduceBlueprint {
                 accumulator_size: info.cube_dim.num_elems(),
                 bound_checks_inner: info.bound_checks_inner,
                 use_planes,
@@ -56,7 +57,7 @@ pub(crate) fn launch_reduce<Run: Runtime>(
     let blueprint = ReduceBlueprint {
         line_mode: info.line_mode,
         bound_checks: info.bound_checks,
-        routine,
+        global: routine,
     };
 
     unsafe {
