@@ -4,9 +4,6 @@ use cubecl::{
     tensor_line_size_perpendicular,
 };
 
-// TODO: Should we allows the user to change that?
-const DEFAULT_PLANE_COUNT: u32 = 4;
-
 #[derive(Debug, Clone)]
 pub struct ReduceLaunchInfo {
     pub cube_count: CubeCount,
@@ -28,11 +25,12 @@ impl ReduceLaunchInfo {
         dtype: StorageType,
     ) -> ReduceLaunchInfo {
         let reduce_count = output.size() as u32;
+        let shape = input.shape[axis] as u32;
 
         ReduceLaunchInfo::new()
             .generate_line_mode(input, axis)
             .generate_line_size(client, input, output, axis, dtype)
-            .generate_cube_dim(client)
+            .generate_cube_dim(client, reduce_count, shape, strategy)
             .generate_cube_count::<R>(reduce_count, strategy)
     }
 
@@ -147,17 +145,26 @@ impl ReduceLaunchInfo {
         self
     }
 
-    pub fn generate_cube_dim<R: Runtime>(mut self, client: &ComputeClient<R>) -> Self {
+    pub fn generate_cube_dim<R: Runtime>(
+        mut self,
+        client: &ComputeClient<R>,
+        reduce_count: u32,
+        shape: u32,
+        strategy: &ReduceStrategy,
+    ) -> Self {
         let hw_properties = &client.properties().hardware;
 
         // We can use plane operations, but we have to use plane size max as the plane_dim.
         let plane_dim = hw_properties.plane_size_max;
-
-        let plane_count = if plane_dim * DEFAULT_PLANE_COUNT > hw_properties.max_units_per_cube {
-            hw_properties.max_units_per_cube / plane_dim
-        } else {
-            DEFAULT_PLANE_COUNT
-        };
+        let plane_count = calculate_plane_count(
+            strategy,
+            plane_dim,
+            reduce_count,
+            shape,
+            hw_properties.num_cpu_cores,
+            self.line_mode,
+            self.line_size_input,
+        );
 
         self.cube_dim = CubeDim::new_2d(plane_dim, plane_count);
         self
@@ -205,5 +212,138 @@ impl ReduceLaunchInfo {
 
     fn do_bound_checks_if(&mut self, condition: bool) {
         self.bound_checks = self.bound_checks || condition;
+    }
+}
+
+fn calculate_plane_count(
+    strategy: &ReduceStrategy,
+    plane_dim: u32,
+    reduce_count: u32,
+    shape: u32,
+    num_cpu_cores: Option<u32>,
+    line_mode: LineMode,
+    line_size: u32,
+) -> u32 {
+    // The number of units that won't be idle when working on the reduction.
+    let num_available_parallel_unit = match strategy {
+        ReduceStrategy::FullUnit => reduce_count,
+        // A single shape is reduced by `plane_dim` units.
+        ReduceStrategy::FullPlane { .. } => reduce_count * (shape / plane_dim),
+        // A single shape is reduced by `plane_dim*plane_count` units.
+        ReduceStrategy::FullCube { .. } => reduce_count * shape,
+    };
+
+    let num_available_parallel_unit = match line_mode {
+        LineMode::Parallel => num_available_parallel_unit,
+        // When perpendicular, each unit is working on multiple vector at a time.
+        LineMode::Perpendicular => num_available_parallel_unit / line_size,
+    };
+
+    match num_cpu_cores {
+        Some(num_cores) => core::cmp::min(num_cores, num_available_parallel_unit),
+        None => {
+            let base = core::cmp::max(1, num_available_parallel_unit / plane_dim);
+            let exp2 = core::cmp::min(3u32, u32::ilog2(base));
+            2u32.pow(exp2)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_calculate_plane_count_gpu() {
+        let strategy = ReduceStrategy::FullUnit;
+        let shape = 512;
+        let plane_dim = 32;
+        let line_mode = LineMode::Parallel;
+        let line_size = 8;
+
+        let plane_count =
+            calculate_plane_count(&strategy, plane_dim, 1, shape, None, line_mode, line_size);
+        assert_eq!(plane_count, 1);
+
+        let plane_count = calculate_plane_count(
+            &strategy,
+            plane_dim,
+            plane_dim - 1,
+            shape,
+            None,
+            line_mode,
+            line_size,
+        );
+        assert_eq!(plane_count, 1);
+
+        let plane_count = calculate_plane_count(
+            &strategy, plane_dim, plane_dim, shape, None, line_mode, line_size,
+        );
+        assert_eq!(plane_count, 1);
+
+        let plane_count = calculate_plane_count(
+            &strategy,
+            plane_dim,
+            plane_dim + 1,
+            shape,
+            None,
+            line_mode,
+            line_size,
+        );
+        assert_eq!(plane_count, 1);
+
+        let plane_count = calculate_plane_count(
+            &strategy,
+            plane_dim,
+            plane_dim * 2,
+            shape,
+            None,
+            line_mode,
+            line_size,
+        );
+        assert_eq!(plane_count, 2);
+
+        let plane_count = calculate_plane_count(
+            &strategy,
+            plane_dim,
+            plane_dim * 6,
+            shape,
+            None,
+            line_mode,
+            line_size,
+        );
+        assert_eq!(plane_count, 4);
+    }
+
+    #[test]
+    fn test_calculate_plane_count_cpu() {
+        let strategy = ReduceStrategy::FullUnit;
+        let shape = 512;
+        let plane_dim = 1;
+        let num_cores = 16;
+        let line_mode = LineMode::Parallel;
+        let line_size = 8;
+
+        let plane_count = calculate_plane_count(
+            &strategy,
+            plane_dim,
+            plane_dim * 1,
+            shape,
+            Some(num_cores),
+            line_mode,
+            line_size,
+        );
+        assert_eq!(plane_count, 1);
+
+        let plane_count = calculate_plane_count(
+            &strategy,
+            plane_dim,
+            plane_dim * 500,
+            shape,
+            Some(num_cores),
+            line_mode,
+            line_size,
+        );
+        assert_eq!(plane_count, num_cores);
     }
 }
