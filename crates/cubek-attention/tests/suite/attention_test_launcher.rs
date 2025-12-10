@@ -277,15 +277,3 @@ where
     }
 }
 
-pub(crate) fn strides(problem: &AttentionProblem, ident: AttentionIdent) -> Vec<usize> {
-    let shape = problem.shape(ident);
-
-    let mut strides = vec![0; shape.len()];
-    let mut acc = 1;
-    for i in (0..shape.len()).rev() {
-        strides[i] = acc;
-        acc *= shape[i];
-    }
-
-    strides
-}

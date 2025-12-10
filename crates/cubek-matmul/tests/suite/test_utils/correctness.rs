@@ -15,10 +15,7 @@ pub fn assert_result(
     dtypes: MatmulElems,
 ) {
     let epsilon = matmul_epsilon(&dtypes, 170.);
-
-    let expected = matmul_cpu_reference(lhs, rhs, problem)
-        .into_iter()
-        .collect::<Vec<f32>>();
+    let expected = matmul_cpu_reference(lhs, rhs, problem);
 
     if let Err(e) = assert_equals_approx(client, out, &expected, epsilon) {
         panic!("{}", e);
