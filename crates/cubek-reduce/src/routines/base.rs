@@ -2,17 +2,14 @@ use crate::{
     LineMode,
     components::{
         instructions::*,
-        level::{self, cube::ReduceCubeConfig, plane::PlaneReduceConfig, unit::UnitReduceConfig},
+        level::{self, cube::ReduceCubeConfig, plane::PlaneReduceConfig, unit::UnitReduce},
         partition::ReducePartition,
         precision::ReducePrecision,
         writer,
     },
     routines::{ReduceBlueprint, ReduceBlueprintKind},
 };
-use cubecl::{
-    prelude::*,
-    std::tensor::{layout::plain::PlainLayout, r#virtual::VirtualTensor},
-};
+use cubecl::{prelude::*, std::tensor::r#virtual::VirtualTensor};
 
 #[cube]
 pub fn reduce_kernel_virtual<In: Numeric, Out: Numeric, Acc: Numeric>(
@@ -56,55 +53,77 @@ fn reduce_kernel_inner<P: ReducePrecision, Out: Numeric, R: ReduceFamily>(
     #[comptime] blueprint: ReduceBlueprint,
     #[comptime] config: R::Config,
 ) {
-    let partition = ReducePartition::from_blueprint::<P, Out>(
-        reduce_index,
-        input,
-        output,
-        axis_reduce,
-        blueprint,
-    );
-
     let input_line_size = input.line_size();
     let inst = &R::Instruction::<P>::from_config(config);
-    let accumulator = match comptime!(blueprint.kind) {
+
+    match comptime!(blueprint.kind) {
         ReduceBlueprintKind::Cube(cube) => {
+            let partition = ReducePartition::from_blueprint::<P, Out>(
+                reduce_index,
+                input,
+                output,
+                axis_reduce,
+                blueprint,
+            );
+
             let config = comptime!(ReduceCubeConfig::new(
                 input_line_size,
                 blueprint.line_mode,
                 cube
             ));
-            level::cube::reduce::<P, VirtualTensor<P::EI>, R::Instruction<P>>(
+            let accumulator = level::cube::reduce::<P, VirtualTensor<P::EI>, R::Instruction<P>>(
                 input, inst, partition, config,
+            );
+
+            writer::write::<P, Out, R::Instruction<P>>(
+                output,
+                accumulator,
+                reduce_index,
+                input.shape(axis_reduce),
+                blueprint,
+                input.line_size(),
+                inst,
             )
         }
         ReduceBlueprintKind::Plane(plane) => {
+            let partition = ReducePartition::from_blueprint::<P, Out>(
+                reduce_index,
+                input,
+                output,
+                axis_reduce,
+                blueprint,
+            );
+
             let config = comptime!(PlaneReduceConfig::new(
                 input_line_size,
                 blueprint.line_mode,
                 plane,
             ));
-            level::plane::reduce::<P, VirtualTensor<P::EI>, R::Instruction<P>>(
+            let accumulator = level::plane::reduce::<P, VirtualTensor<P::EI>, R::Instruction<P>>(
                 input, inst, partition, config,
+            );
+
+            writer::write::<P, Out, R::Instruction<P>>(
+                output,
+                accumulator,
+                reduce_index,
+                input.shape(axis_reduce),
+                blueprint,
+                input.line_size(),
+                inst,
             )
         }
         ReduceBlueprintKind::Unit => {
-            let config = comptime!(UnitReduceConfig::new(input_line_size, blueprint.line_mode));
-
-            level::unit::reduce_unit::<P, VirtualTensor<P::EI>, R::Instruction<P>>(
-                input, partition, inst, config,
-            )
+            UnitReduce::execute_global::<P, Out, R::Instruction<P>>(
+                input,
+                output,
+                axis_reduce,
+                reduce_index,
+                inst,
+                blueprint,
+            );
         }
     };
-
-    writer::write::<P, Out, R::Instruction<P>>(
-        output,
-        accumulator,
-        reduce_index,
-        input.shape(axis_reduce),
-        blueprint,
-        input.line_size(),
-        inst,
-    )
 }
 
 #[cube]

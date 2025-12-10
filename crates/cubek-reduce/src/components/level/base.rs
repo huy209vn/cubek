@@ -1,7 +1,7 @@
 use crate::{
     LineMode, ReduceInstruction, ReducePrecision,
     components::{
-        instructions::{ReduceCoordinate, ReduceOperation, ReduceRequirements},
+        instructions::{ReduceCoordinate, ReduceRequirements},
         partition::ReducePartition,
     },
 };

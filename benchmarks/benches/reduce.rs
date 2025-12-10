@@ -78,7 +78,7 @@ fn run<R: Runtime, E: frontend::Float>(device: R::Device) {
     let client = R::client(&device);
     for axis in [2] {
         let bench = ReduceBench::<R, E> {
-            shape: vec![32, 512, 2048],
+            shape: vec![1024, 512, 256],
             axis,
             client: client.clone(),
             device: device.clone(),

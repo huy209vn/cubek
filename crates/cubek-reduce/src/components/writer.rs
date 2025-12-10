@@ -44,16 +44,32 @@ pub fn write<P: ReducePrecision, Out: Numeric, R: ReduceInstruction<P>>(
     inst: &R,
 ) {
     let config = comptime!(WriterConfig::from_blueprint(blueprint));
-    if elected_writer(comptime!(config.clone())) {
-        write_accumulator::<P, Out, R>(
-            output,
-            accumulator,
-            reduce_index,
-            shape_axis_reduce,
-            config,
-            input_line_size,
-            inst,
-        );
+
+    match comptime!(config.shared || config.use_planes) {
+        true => {
+            if elected_writer(comptime!(config.clone())) {
+                write_accumulator::<P, Out, R>(
+                    output,
+                    accumulator,
+                    reduce_index,
+                    shape_axis_reduce,
+                    config,
+                    input_line_size,
+                    inst,
+                );
+            }
+        }
+        false => {
+            write_accumulator::<P, Out, R>(
+                output,
+                accumulator,
+                reduce_index,
+                shape_axis_reduce,
+                config,
+                input_line_size,
+                inst,
+            );
+        }
     }
 }
 
@@ -100,7 +116,7 @@ fn write_accumulator<P: ReducePrecision, Out: Numeric, R: ReduceInstruction<P>>(
 
 #[cube]
 fn elected_writer(#[comptime] settings: WriterConfig) -> bool {
-    if settings.shared {
+    if comptime!(settings.shared) {
         UNIT_POS == 0
     } else if settings.use_planes {
         UNIT_POS_X == 0

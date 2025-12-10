@@ -1,13 +1,19 @@
 use crate::{
-    LineMode,
-    components::{instructions::*, partition::ReducePartition, precision::ReducePrecision},
+    LineMode, ReduceInstruction, ReducePrecision,
+    components::{
+        instructions::{ReduceCoordinate, reduce_inplace},
+        level::ReduceJob,
+        partition::{PartitionOption, PartitionSplit, ReducePartition},
+        writer,
+    },
+    routines::ReduceBlueprint,
 };
-use cubecl::prelude::*;
+use cubecl::{prelude::*, std::tensor::r#virtual::VirtualTensor};
 
 #[derive(Clone)]
 pub struct UnitReduceConfig {
-    line_size: u32,
-    line_mode: LineMode,
+    pub line_size: u32,
+    pub line_mode: LineMode,
 }
 
 impl UnitReduceConfig {
@@ -19,46 +25,118 @@ impl UnitReduceConfig {
     }
 }
 
-/// Use an individual unit to reduce the `items` with the specified range.
-/// That is, this will reduces `items[range.start]`, `items[range.start + range.step]`
-/// until `items[range.end]` (exclusive).
-///
-/// This reduces using the given `line_mode` but doesn't reduce the accumulator itself.
-///
-/// Since each individual unit performs a reduction, this function is meant to be called
-/// with either a different `items` for each unit, a different `range` or both based on ABSOLUTE_UNIT_POS.
-///
-/// # Notes
-///
-/// A single worker (UNIT) is reducing the full partition.
+#[derive(CubeType)]
+pub struct UnitReduce;
+
 #[cube]
-pub fn reduce_unit<P: ReducePrecision, I: List<Line<P::EI>>, R: ReduceInstruction<P>>(
-    items: &I,
-    partition: ReducePartition,
-    inst: &R,
-    #[comptime] config: UnitReduceConfig,
-) -> R::AccumulatorItem {
-    let mut accumulator = R::null_accumulator(inst, config.line_size);
-    let mut index = partition.index_start;
-    let requirements = R::requirements(inst);
-
-    for coordinate in range_stepped(
-        partition.coordinate_start,
-        partition.coordinate_end,
-        partition.coordinate_step,
+impl UnitReduce {
+    pub fn execute_global<P: ReducePrecision, Out: Numeric, I: ReduceInstruction<P>>(
+        input: &VirtualTensor<P::EI>,
+        output: &mut VirtualTensor<Out, ReadWrite>,
+        axis_reduce: u32,
+        reduce_index: u32,
+        inst: &I,
+        #[comptime] blueprint: ReduceBlueprint,
     ) {
-        let coordinates =
-            ReduceCoordinate::new(coordinate, requirements, config.line_size, config.line_mode);
-
-        reduce_inplace::<P, R>(
-            inst,
-            &mut accumulator,
-            items.read(index),
-            coordinates,
-            false,
+        let input_line_size = input.line_size();
+        let config = comptime!(UnitReduceConfig::new(
+            input.line_size(),
+            blueprint.line_mode
+        ));
+        let partition = UnitReduce::global_partitioning::<P, Out>(
+            reduce_index,
+            input,
+            output,
+            axis_reduce,
+            comptime!(config.clone()),
         );
-        index += partition.index_step;
+        let mut accumulator = I::null_accumulator(inst, input_line_size);
+
+        <UnitReduce as ReduceJob<P, I>>::execute(
+            input,
+            inst,
+            partition,
+            &mut accumulator,
+            comptime!(config.clone()),
+        );
+        writer::write::<P, Out, I>(
+            output,
+            accumulator,
+            reduce_index,
+            input.shape(axis_reduce),
+            blueprint,
+            input.line_size(),
+            inst,
+        )
     }
 
-    accumulator
+    pub fn global_partitioning<P: ReducePrecision, Out: Numeric>(
+        reduce_index: u32,
+        input: &VirtualTensor<P::EI>,
+        output: &mut VirtualTensor<Out, ReadWrite>,
+        axis_reduce: u32,
+        #[comptime] config: UnitReduceConfig,
+    ) -> ReducePartition {
+        let line_mode = config.line_mode;
+
+        ReducePartition::new::<P, Out>(
+            reduce_index,
+            input,
+            output,
+            axis_reduce,
+            comptime!(PartitionOption {
+                split: PartitionSplit::Unit,
+                line_mode,
+            }),
+        )
+    }
+
+    pub fn plane_partitioning<P: ReducePrecision, Out: Numeric>(
+        reduce_index: u32,
+        input: &VirtualTensor<P::EI>,
+        output: &mut VirtualTensor<Out, ReadWrite>,
+        axis_reduce: u32,
+        #[comptime] config: UnitReduceConfig,
+    ) -> ReducePartition {
+        let line_mode = config.line_mode;
+
+        ReducePartition::new::<P, Out>(
+            reduce_index,
+            input,
+            output,
+            axis_reduce,
+            comptime!(PartitionOption {
+                split: PartitionSplit::Plane,
+                line_mode,
+            }),
+        )
+    }
+}
+
+#[cube]
+impl<P: ReducePrecision, I: ReduceInstruction<P>> ReduceJob<P, I> for UnitReduce {
+    type Config = UnitReduceConfig;
+
+    fn execute(
+        input: &VirtualTensor<P::EI>,
+        inst: &I,
+        partition: ReducePartition,
+        accumulator: &mut I::AccumulatorItem,
+        #[comptime] config: Self::Config,
+    ) {
+        let mut index = partition.index_start;
+        let requirements = I::requirements(inst);
+
+        for coordinate in range_stepped(
+            partition.coordinate_start,
+            partition.coordinate_end,
+            partition.coordinate_step,
+        ) {
+            let coordinates =
+                ReduceCoordinate::new(coordinate, requirements, config.line_size, config.line_mode);
+
+            reduce_inplace::<P, I>(inst, accumulator, input.read(index), coordinates, false);
+            index += partition.index_step;
+        }
+    }
 }
