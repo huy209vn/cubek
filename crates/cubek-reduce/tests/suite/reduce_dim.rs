@@ -22,12 +22,12 @@ pub fn test_argmin() {
 
 #[test]
 pub fn test_mean() {
-    test_case().test_sum();
+    test_case().test_mean();
 }
 
 #[test]
 pub fn test_sum() {
-    test_case().test_mean();
+    test_case().test_sum();
 }
 
 #[test]
@@ -79,6 +79,8 @@ impl TestCase {
     }
 
     pub fn test_argmin(&self) {
+        println!("{self:?}");
+
         let input_values: Vec<<TestDType as ReducePrecision>::EI> = self.random_input_values();
         let expected_values = match self.axis {
             Some(axis) if self.stride[axis] == 0 => vec![0; input_values.len()],
@@ -149,7 +151,10 @@ impl TestCase {
     }
 
     pub fn test_sum(&self) {
+        println!("{self:?}");
+
         let input_values: Vec<EI> = self.random_input_values();
+        println!("{input_values:?}");
         let expected_values = match self.axis {
             Some(axis) if self.stride[axis] == 0 => input_values
                 .iter()

@@ -5,7 +5,7 @@ use cubecl::{
 };
 
 // TODO: Should we allows the user to change that?
-const DEFAULT_PLANE_COUNT: u32 = 8;
+const DEFAULT_PLANE_COUNT: u32 = 4;
 
 #[derive(Debug, Clone)]
 pub struct ReduceLaunchInfo {

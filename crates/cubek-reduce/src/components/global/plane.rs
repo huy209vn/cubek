@@ -1,11 +1,6 @@
 use crate::{
     LineMode, ReduceInstruction, ReducePrecision,
-    components::{
-        instructions::reduce_inplace,
-        level::{self, plane::PlaneReduceConfig},
-        partition::{PartitionOption, PartitionSplit, ReducePartition},
-        writer,
-    },
+    components::{instructions::reduce_inplace, readers::plane::PlaneReader, writer},
     routines::ReduceBlueprint,
 };
 use cubecl::{prelude::*, std::tensor::r#virtual::VirtualTensor};
@@ -18,32 +13,51 @@ impl GlobalFullPlaneReduce {
     pub fn execute<P: ReducePrecision, Out: Numeric, I: ReduceInstruction<P>>(
         input: &VirtualTensor<P::EI>,
         output: &mut VirtualTensor<Out, ReadWrite>,
-        axis_reduce: u32,
+        reduce_axis: u32,
         reduce_index: u32,
         inst: &I,
         #[comptime] blueprint: ReduceBlueprint,
     ) {
-        let line_mode = blueprint.line_mode;
+        #[allow(clippy::collapsible_if)]
+        if comptime![blueprint.bound_checks] {
+            if reduce_index
+                >= get_reduce_count(
+                    output.len() * output.line_size(),
+                    blueprint.line_mode,
+                    input.line_size(),
+                )
+            {
+                terminate!();
+            }
+        }
         let plane_blueprint = comptime!(match blueprint.global {
             crate::routines::GlobalReduceBlueprint::FullPlane(b) => b.clone(),
             _ => panic!(),
         });
         let input_line_size = input.line_size();
-        let config = comptime!(PlaneReduceConfig::new(
-            input_line_size,
-            line_mode,
-            plane_blueprint,
-        ));
-        let partition = GlobalFullPlaneReduce::partition::<P, Out>(
-            reduce_index,
+
+        let reader = PlaneReader::<P>::new::<I, Out>(
             input,
             output,
-            axis_reduce,
-            line_mode,
+            inst,
+            reduce_axis,
+            reduce_index,
+            plane_blueprint.bound_checks_inner,
+            blueprint.line_mode,
         );
 
-        let accumulator =
-            level::plane::reduce::<P, VirtualTensor<P::EI>, I>(input, inst, partition, config);
+        let mut accumulator = I::null_accumulator(inst, input_line_size);
+
+        for i in 0..reader.len() {
+            let (item, coordinate) = reader.read(i);
+            reduce_inplace::<P, I>(
+                inst,
+                &mut accumulator,
+                item,
+                coordinate,
+                comptime!(!plane_blueprint.independant),
+            );
+        }
 
         let result = match plane_blueprint.independant {
             true => {
@@ -59,29 +73,22 @@ impl GlobalFullPlaneReduce {
             output,
             result,
             reduce_index,
-            input.shape(axis_reduce),
+            input.shape(reduce_axis),
             blueprint,
             input.line_size(),
             inst,
         )
     }
+}
 
-    fn partition<P: ReducePrecision, Out: Numeric>(
-        reduce_index: u32,
-        input: &VirtualTensor<P::EI>,
-        output: &mut VirtualTensor<Out, ReadWrite>,
-        axis_reduce: u32,
-        #[comptime] line_mode: LineMode,
-    ) -> ReducePartition {
-        ReducePartition::new::<P, Out>(
-            reduce_index,
-            input,
-            output,
-            axis_reduce,
-            comptime!(PartitionOption {
-                split: PartitionSplit::Plane,
-                line_mode,
-            }),
-        )
+#[cube]
+fn get_reduce_count(
+    output_size: u32,
+    #[comptime] line_mode: LineMode,
+    #[comptime] input_line_size: u32,
+) -> u32 {
+    match comptime!(line_mode) {
+        LineMode::Parallel => output_size,
+        LineMode::Perpendicular => output_size / input_line_size,
     }
 }
