@@ -28,16 +28,11 @@ impl ReduceLaunchInfo {
         dtype: StorageType,
     ) -> ReduceLaunchInfo {
         let reduce_count = output.size() as u32;
-        let use_planes = match strategy {
-            ReduceStrategy::FullUnit => false,
-            ReduceStrategy::FullPlane { level } => true,
-            ReduceStrategy::FullCube { use_planes } => *use_planes,
-        };
 
         ReduceLaunchInfo::new()
             .generate_line_mode(input, axis)
             .generate_line_size(client, input, output, axis, dtype)
-            .generate_cube_dim(client, use_planes)
+            .generate_cube_dim(client)
             .generate_cube_count::<R>(reduce_count, strategy)
     }
 
@@ -152,18 +147,11 @@ impl ReduceLaunchInfo {
         self
     }
 
-    pub fn generate_cube_dim<R: Runtime>(
-        mut self,
-        client: &ComputeClient<R>,
-        use_planes: bool,
-    ) -> Self {
+    pub fn generate_cube_dim<R: Runtime>(mut self, client: &ComputeClient<R>) -> Self {
         let hw_properties = &client.properties().hardware;
 
-        let plane_dim = if use_planes {
-            hw_properties.plane_size_min
-        } else {
-            hw_properties.plane_size_max
-        };
+        // We can use plane operations, but we have to use plane size max as the plane_dim.
+        let plane_dim = hw_properties.plane_size_max;
 
         let plane_count = if plane_dim * DEFAULT_PLANE_COUNT > hw_properties.max_units_per_cube {
             hw_properties.max_units_per_cube / plane_dim

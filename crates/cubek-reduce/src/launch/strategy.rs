@@ -39,16 +39,13 @@ impl ReduceStrategy {
     pub fn validate<R: Runtime>(self, client: &ComputeClient<R>) -> Result<Self, ReduceError> {
         let use_planes = match &self {
             ReduceStrategy::FullUnit => false,
-            ReduceStrategy::FullPlane { level } => true,
+            ReduceStrategy::FullPlane { .. } => true,
             ReduceStrategy::FullCube { use_planes } => *use_planes,
         };
 
         if use_planes {
             if !support_plane(client) {
                 return Err(ReduceError::PlanesUnavailable);
-            }
-            if !precise_plane_dim(client) {
-                return Err(ReduceError::ImprecisePlaneDim);
             }
         }
 
@@ -58,9 +55,4 @@ impl ReduceStrategy {
 
 fn support_plane<R: Runtime>(client: &ComputeClient<R>) -> bool {
     client.properties().features.plane.contains(Plane::Ops)
-}
-
-fn precise_plane_dim<R: Runtime>(client: &ComputeClient<R>) -> bool {
-    let hw_props = &client.properties().hardware;
-    hw_props.plane_size_min == hw_props.plane_size_max
 }
