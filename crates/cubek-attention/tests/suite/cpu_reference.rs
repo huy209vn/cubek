@@ -1,5 +1,47 @@
 use cubek_attention::components::{AttentionIdent, AttentionProblem};
 
+use core::f32;
+
+use cubecl::{TestRuntime, client::ComputeClient, std::tensor::TensorHandle};
+
+use cubek_attention::components::AttentionElems;
+use cubek_std::test_utils::assert_equals_approx;
+
+pub fn assert_result(
+    query: &[f32],
+    key: &[f32],
+    value: &[f32],
+    mask: Option<&[bool]>,
+    problem: &AttentionProblem,
+    client: &ComputeClient<TestRuntime>,
+    out: TensorHandle<TestRuntime>,
+    elems: AttentionElems,
+) {
+    let epsilon = attention_epsilon(&elems, 170.);
+    let expected = flash_attention_v2_cpu(query, key, value, mask, problem);
+
+    if let Err(e) = assert_equals_approx(client, &out, &expected, epsilon) {
+        panic!("{}", e);
+    }
+}
+
+fn attention_epsilon(elems: &AttentionElems, safety_factor: f32) -> f32 {
+    let total_eps = elems.query_global.epsilon()
+        + elems.query_tile.epsilon()
+        + elems.key_global.epsilon()
+        + elems.key_stage.epsilon()
+        + elems.value_global.epsilon()
+        + elems.value_stage.epsilon()
+        + elems.key_value_tile.epsilon()
+        + elems.softmax.epsilon()
+        + elems.accumulator.epsilon()
+        + elems.mask.epsilon()
+        + elems.out_global.epsilon()
+        + elems.out_stage.epsilon();
+
+    total_eps as f32 * safety_factor
+}
+
 pub(crate) fn flash_attention_v2_cpu(
     query: &[f32],
     key: &[f32],

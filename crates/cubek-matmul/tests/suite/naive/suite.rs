@@ -1,8 +1,10 @@
-use crate::suite::test_utils::{assert_result, input_test_tensor, output_test_tensor};
+use crate::suite::assert_result;
 use cubecl::Runtime;
 use cubecl::frontend::CubePrimitive;
 use cubecl::prelude::TensorHandleRef;
+use cubecl::std::tensor::TensorHandle;
 use cubek_matmul::MatmulInputHandleRef;
+use cubek_std::test_utils::{compute_strides, random_tensor};
 
 use cubek_matmul::components::{MatmulElems, MatmulIdent, MatmulProblem, MatrixLayout};
 use cubek_matmul::kernels::naive;
@@ -110,24 +112,31 @@ fn test_naive(case: MatmulTestCase) {
     let problem = case.to_problem();
 
     let dtype = elem();
+    let lhs_shape = problem.shape(MatmulIdent::Lhs);
+    let rhs_shape = problem.shape(MatmulIdent::Rhs);
 
-    let (lhs, lhs_data) = input_test_tensor(
+    let (lhs, lhs_data) = random_tensor(
         &client,
-        dtype,
+        *dtype,
         1234,
-        problem.lhs_layout,
-        problem.shape(MatmulIdent::Lhs),
+        &compute_strides(
+            &lhs_shape,
+            matches!(problem.lhs_layout, MatrixLayout::ColMajor),
+        ),
+        &lhs_shape,
     );
-
-    let (rhs, rhs_data) = input_test_tensor(
+    let (rhs, rhs_data) = random_tensor(
         &client,
-        dtype,
+        *dtype,
         5678,
-        problem.rhs_layout,
-        problem.shape(MatmulIdent::Rhs),
+        &compute_strides(
+            &rhs_shape,
+            matches!(problem.rhs_layout, MatrixLayout::ColMajor),
+        ),
+        &rhs_shape,
     );
 
-    let out = output_test_tensor(&client, &problem, dtype);
+    let out = TensorHandle::zeros(&client, problem.shape(MatmulIdent::Out), *dtype);
 
     let lhs_handle = MatmulInputHandleRef::Normal(lhs.as_ref(), dtype.dtype);
     let rhs_handle = MatmulInputHandleRef::Normal(rhs.as_ref(), dtype.dtype);
