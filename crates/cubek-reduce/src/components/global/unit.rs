@@ -1,5 +1,5 @@
 use crate::{
-    ReduceInstruction, ReducePrecision,
+    LineMode, ReduceInstruction, ReducePrecision,
     components::{
         level::{
             ReduceJob,
@@ -25,6 +25,18 @@ impl GlobalFullUnitReduce {
         inst: &I,
         #[comptime] blueprint: ReduceBlueprint,
     ) {
+        #[allow(clippy::collapsible_if)]
+        if comptime![blueprint.bound_checks] {
+            if reduce_index
+                >= get_reduce_count(
+                    output.len() * output.line_size(),
+                    blueprint.line_mode,
+                    input.line_size(),
+                )
+            {
+                terminate!();
+            }
+        }
         let input_line_size = input.line_size();
         let config = comptime!(UnitReduceConfig::new(input_line_size, blueprint.line_mode,));
         let partition = GlobalFullUnitReduce::partition::<P, Out>(
@@ -73,5 +85,17 @@ impl GlobalFullUnitReduce {
                 line_mode,
             }),
         )
+    }
+}
+
+#[cube]
+fn get_reduce_count(
+    output_size: u32,
+    #[comptime] line_mode: LineMode,
+    #[comptime] input_line_size: u32,
+) -> u32 {
+    match comptime!(line_mode) {
+        LineMode::Parallel => output_size,
+        LineMode::Perpendicular => output_size / input_line_size,
     }
 }

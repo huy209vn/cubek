@@ -50,7 +50,7 @@ impl PlaneReduceConfig {
 pub fn reduce<P: ReducePrecision, I: List<Line<P::EI>>, R: ReduceInstruction<P>>(
     items: &I,
     inst: &R,
-    range: ReducePartition,
+    partition: ReducePartition,
     #[comptime] config: PlaneReduceConfig,
 ) -> R::AccumulatorItem {
     let plane_dim = CUBE_DIM_X;
@@ -58,12 +58,12 @@ pub fn reduce<P: ReducePrecision, I: List<Line<P::EI>>, R: ReduceInstruction<P>>
 
     let requirements = R::requirements(inst);
     let mut accumulator = R::null_accumulator(inst, config.line_size);
-    let mut first_index = range.index_start;
+    let mut first_index = partition.index_start;
 
     for first_coordinate in range_stepped(
-        range.coordinate_start,
-        range.coordinate_end,
-        range.coordinate_step,
+        partition.coordinate_start,
+        partition.coordinate_end,
+        partition.coordinate_step,
     ) {
         let unit_coordinate_offset = match config.line_mode {
             LineMode::Parallel => worker_index * config.line_size,
@@ -78,11 +78,11 @@ pub fn reduce<P: ReducePrecision, I: List<Line<P::EI>>, R: ReduceInstruction<P>>
             config.line_mode,
         );
 
-        let index = first_index + worker_index * range.index_step;
+        let index = first_index + worker_index * partition.index_step;
         let item = match config.bound_checks {
             BoundChecksInner::None => items.read(index),
             BoundChecksInner::Mask => {
-                let mask = unit_coordinate < range.coordinate_end;
+                let mask = unit_coordinate < partition.coordinate_end;
                 let index = index * u32::cast_from(mask);
                 select(
                     mask,
@@ -91,7 +91,7 @@ pub fn reduce<P: ReducePrecision, I: List<Line<P::EI>>, R: ReduceInstruction<P>>
                 )
             }
             BoundChecksInner::Branch => {
-                if unit_coordinate < range.coordinate_end {
+                if unit_coordinate < partition.coordinate_end {
                     items.read(index)
                 } else {
                     R::null_input(inst, config.line_size)
@@ -107,7 +107,7 @@ pub fn reduce<P: ReducePrecision, I: List<Line<P::EI>>, R: ReduceInstruction<P>>
             comptime!(!config.independant),
         );
 
-        first_index += plane_dim * range.index_step;
+        first_index += plane_dim * partition.index_step;
     }
     accumulator
 }

@@ -1,5 +1,5 @@
 use crate::{
-    LineMode, PlaneReduceLevel,
+    PlaneReduceLevel,
     components::{
         global::{plane::GlobalFullPlaneReduce, unit::GlobalFullUnitReduce},
         instructions::*,
@@ -21,19 +21,6 @@ pub fn reduce_kernel_virtual<In: Numeric, Out: Numeric, Acc: Numeric>(
     #[comptime] config: ReduceOperationConfig,
 ) {
     let reduce_index = get_reduce_index(blueprint.global);
-
-    #[allow(clippy::collapsible_if)]
-    if comptime![blueprint.bound_checks] {
-        if reduce_index
-            >= get_reduce_count(
-                output.len() * output.line_size(),
-                blueprint.line_mode,
-                input.line_size(),
-            )
-        {
-            terminate!();
-        }
-    }
 
     reduce_kernel_inner::<(In, Acc), Out, ReduceOperation>(
         input,
@@ -144,17 +131,5 @@ fn get_reduce_index(#[comptime] params: GlobalReduceBlueprint) -> u32 {
         GlobalReduceBlueprint::FullUnit => ABSOLUTE_POS,
         GlobalReduceBlueprint::FullPlane { .. } => CUBE_POS * CUBE_DIM_Y + UNIT_POS_Y,
         GlobalReduceBlueprint::Cube { .. } => CUBE_POS,
-    }
-}
-
-#[cube]
-fn get_reduce_count(
-    output_size: u32,
-    #[comptime] line_mode: LineMode,
-    #[comptime] input_line_size: u32,
-) -> u32 {
-    match comptime!(line_mode) {
-        LineMode::Parallel => output_size,
-        LineMode::Perpendicular => output_size / input_line_size,
     }
 }
