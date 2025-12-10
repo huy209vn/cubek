@@ -33,7 +33,6 @@ impl GlobalFullPlaneReduce {
             input_line_size,
             line_mode,
             plane_blueprint,
-            true,
         ));
         let partition = GlobalFullPlaneReduce::partition::<P, Out>(
             reduce_index,
@@ -46,10 +45,15 @@ impl GlobalFullPlaneReduce {
         let accumulator =
             level::plane::reduce::<P, VirtualTensor<P::EI>, I>(input, inst, partition, config);
 
-        let (item, coordinate) = I::read_accumulator(inst, &accumulator);
-
-        let mut result = I::null_accumulator(inst, input_line_size);
-        reduce_inplace::<P, I>(inst, &mut result, item, coordinate, true);
+        let result = match plane_blueprint.independant {
+            true => {
+                let (item, coordinate) = I::read_accumulator(inst, &accumulator);
+                let mut result = I::null_accumulator(inst, input_line_size);
+                reduce_inplace::<P, I>(inst, &mut result, item, coordinate, true);
+                result
+            }
+            false => accumulator,
+        };
 
         writer::write::<P, Out, I>(
             output,

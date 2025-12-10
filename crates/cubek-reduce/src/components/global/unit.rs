@@ -1,13 +1,6 @@
 use crate::{
     LineMode, ReduceInstruction, ReducePrecision,
-    components::{
-        level::{
-            ReduceJob,
-            unit::{UnitReduce, UnitReduceConfig},
-        },
-        partition::{PartitionOption, PartitionSplit, ReducePartition},
-        writer,
-    },
+    components::{instructions::reduce_inplace, readers::unit::UnitReader, writer},
     routines::ReduceBlueprint,
 };
 use cubecl::{prelude::*, std::tensor::r#virtual::VirtualTensor};
@@ -20,7 +13,7 @@ impl GlobalFullUnitReduce {
     pub fn execute<P: ReducePrecision, Out: Numeric, I: ReduceInstruction<P>>(
         input: &VirtualTensor<P::EI>,
         output: &mut VirtualTensor<Out, ReadWrite>,
-        axis_reduce: u32,
+        reduce_axis: u32,
         reduce_index: u32,
         inst: &I,
         #[comptime] blueprint: ReduceBlueprint,
@@ -38,52 +31,36 @@ impl GlobalFullUnitReduce {
             }
         }
         let input_line_size = input.line_size();
-        let config = comptime!(UnitReduceConfig::new(input_line_size, blueprint.line_mode,));
-        let partition = GlobalFullUnitReduce::partition::<P, Out>(
-            reduce_index,
+
+        let reader = UnitReader::<P>::new::<I, Out>(
             input,
             output,
-            axis_reduce,
-            comptime!(config.clone()),
+            inst,
+            reduce_axis,
+            reduce_index,
+            blueprint.line_mode,
         );
+
+        let num_iter = match blueprint.line_mode {
+            LineMode::Parallel => input.shape(reduce_axis) / input_line_size,
+            LineMode::Perpendicular => input.shape(reduce_axis),
+        };
+
         let mut accumulator = I::null_accumulator(inst, input_line_size);
 
-        <UnitReduce as ReduceJob<P, I>>::execute(
-            input,
-            inst,
-            partition,
-            &mut accumulator,
-            comptime!(config.clone()),
-        );
+        for i in 0..num_iter {
+            let (item, coordinate) = reader.read(i);
+            reduce_inplace::<P, I>(inst, &mut accumulator, item, coordinate, false);
+        }
+
         writer::write::<P, Out, I>(
             output,
             accumulator,
             reduce_index,
-            input.shape(axis_reduce),
+            input.shape(reduce_axis),
             blueprint,
             input.line_size(),
             inst,
-        )
-    }
-
-    fn partition<P: ReducePrecision, Out: Numeric>(
-        reduce_index: u32,
-        input: &VirtualTensor<P::EI>,
-        output: &mut VirtualTensor<Out, ReadWrite>,
-        axis_reduce: u32,
-        #[comptime] config: UnitReduceConfig,
-    ) -> ReducePartition {
-        let line_mode = config.line_mode;
-
-        ReducePartition::new::<P, Out>(
-            reduce_index,
-            input,
-            output,
-            axis_reduce,
-            comptime!(PartitionOption {
-                split: PartitionSplit::Unit,
-                line_mode,
-            }),
         )
     }
 }

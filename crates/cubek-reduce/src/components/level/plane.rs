@@ -15,17 +15,12 @@ pub struct PlaneReduceConfig {
 }
 
 impl PlaneReduceConfig {
-    pub fn new(
-        input_line_size: u32,
-        line_mode: LineMode,
-        blueprint: PlaneReduceBlueprint,
-        independant: bool,
-    ) -> Self {
+    pub fn new(input_line_size: u32, line_mode: LineMode, blueprint: PlaneReduceBlueprint) -> Self {
         Self {
             line_size: input_line_size,
             line_mode,
             bound_checks: blueprint.bound_checks_inner,
-            independant,
+            independant: blueprint.independant,
         }
     }
 }

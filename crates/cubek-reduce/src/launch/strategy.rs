@@ -1,26 +1,14 @@
 use crate::ReduceError;
 use cubecl::{features::Plane, prelude::*};
 
-// #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
-// pub struct ReduceStrategyLegacy {
-//     /// If true and the compute client support plane instructions,
-//     /// then try using them in the kernel. It could still be impossible to use
-//     /// plane instructions depending on the memory layout of the tensors.
-//     pub use_planes: bool,
-//
-//     /// If true, all units within a single cube cooperate to reduce a single item in the output.
-//     /// Else, each unit or plane (if planes is true) reduce a single item by itself.
-//     pub shared: bool,
-// }
-
 #[derive(Debug, Clone, Copy)]
 pub enum ReduceStrategy {
     /// A unit is responsable to reduce a full vector.
     FullUnit,
     /// A plane is responsable to reduce a full vector.
     FullPlane {
-        /// How the reduce is done by the plane.
-        level: PlaneReduceLevel,
+        /// How the accumulators are handled in a plane.
+        independant: bool,
     },
     /// A cube is responsable to reduce a full vector.
     FullCube {

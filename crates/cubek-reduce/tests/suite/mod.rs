@@ -86,7 +86,7 @@ macro_rules! testgen_reduce {
                 shape: $shape,
                 strides: $strides,
                 axis: $axis,
-                strategy: ReduceStrategy::FullPlane { level: PlaneReduceLevel::Plane },
+                strategy: ReduceStrategy::FullPlane { independant: false },
             );
         }
 
@@ -98,7 +98,7 @@ macro_rules! testgen_reduce {
                 shape: $shape,
                 strides: $strides,
                 axis: $axis,
-                strategy: ReduceStrategy::FullPlane { level: PlaneReduceLevel::Unit },
+                strategy: ReduceStrategy::FullPlane { independant: true },
             );
         }
 

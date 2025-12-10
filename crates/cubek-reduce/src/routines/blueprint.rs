@@ -1,4 +1,4 @@
-use crate::{BoundChecksInner, LineMode, PlaneReduceLevel};
+use crate::{BoundChecksInner, LineMode};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ReduceBlueprint {
@@ -25,5 +25,5 @@ pub struct CubeReduceBlueprint {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PlaneReduceBlueprint {
     pub bound_checks_inner: BoundChecksInner,
-    pub level: PlaneReduceLevel,
+    pub independant: bool,
 }

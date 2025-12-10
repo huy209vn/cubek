@@ -78,17 +78,17 @@ impl<R: Runtime, E: Float> Benchmark for ReduceBench<R, E> {
 fn run<R: Runtime, E: frontend::Float>(device: R::Device) {
     let client = R::client(&device);
     for strategy in [
-        // ReduceStrategy::FullUnit,
+        ReduceStrategy::FullUnit,
         ReduceStrategy::FullPlane {
             level: PlaneReduceLevel::Unit,
         },
-        // ReduceStrategy::FullPlane {
-        //     level: PlaneReduceLevel::Plane,
-        // },
-        // ReduceStrategy::FullCube { use_planes: true },
-        // ReduceStrategy::FullCube { use_planes: false },
+        ReduceStrategy::FullPlane {
+            level: PlaneReduceLevel::Plane,
+        },
+        ReduceStrategy::FullCube { use_planes: true },
+        ReduceStrategy::FullCube { use_planes: false },
     ] {
-        for axis in [2] {
+        for axis in [0, 1, 2] {
             let bench = ReduceBench::<R, E> {
                 shape: vec![32, 512, 4096],
                 axis,

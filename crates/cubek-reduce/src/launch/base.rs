@@ -34,10 +34,10 @@ pub(crate) fn launch_reduce<Run: Runtime>(
 ) -> Result<(), LaunchError> {
     let routine = match strategy {
         ReduceStrategy::FullUnit => GlobalReduceBlueprint::FullUnit,
-        ReduceStrategy::FullPlane { level } => {
+        ReduceStrategy::FullPlane { independant } => {
             GlobalReduceBlueprint::FullPlane(PlaneReduceBlueprint {
                 bound_checks_inner: info.bound_checks_inner,
-                level,
+                independant,
             })
         }
         ReduceStrategy::FullCube { use_planes } => match use_planes {

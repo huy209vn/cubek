@@ -1,9 +1,8 @@
 use crate::{
-    PlaneReduceLevel,
     components::{
         global::{plane::GlobalFullPlaneReduce, unit::GlobalFullUnitReduce},
         instructions::*,
-        level::{self, cube::ReduceCubeConfig, plane::PlaneReduceConfig},
+        level::{self, cube::ReduceCubeConfig},
         partition::ReducePartition,
         precision::ReducePrecision,
         writer,
@@ -73,45 +72,16 @@ fn reduce_kernel_inner<P: ReducePrecision, Out: Numeric, R: ReduceFamily>(
                 inst,
             )
         }
-        GlobalReduceBlueprint::FullPlane(plane) => match plane.level {
-            PlaneReduceLevel::Plane => {
-                let partition = ReducePartition::from_blueprint::<P, Out>(
-                    reduce_index,
-                    input,
-                    output,
-                    axis_reduce,
-                    blueprint,
-                );
-
-                let config = comptime!(PlaneReduceConfig::new(
-                    input_line_size,
-                    blueprint.line_mode,
-                    plane,
-                    false,
-                ));
-                let accumulator = level::plane::reduce::<P, VirtualTensor<P::EI>, R::Instruction<P>>(
-                    input, inst, partition, config,
-                );
-
-                writer::write::<P, Out, R::Instruction<P>>(
-                    output,
-                    accumulator,
-                    reduce_index,
-                    input.shape(axis_reduce),
-                    blueprint,
-                    input.line_size(),
-                    inst,
-                )
-            }
-            PlaneReduceLevel::Unit => GlobalFullPlaneReduce::execute::<P, Out, R::Instruction<P>>(
+        GlobalReduceBlueprint::FullPlane(..) => {
+            GlobalFullPlaneReduce::execute::<P, Out, R::Instruction<P>>(
                 input,
                 output,
                 axis_reduce,
                 reduce_index,
                 inst,
                 blueprint,
-            ),
-        },
+            )
+        }
         GlobalReduceBlueprint::FullUnit => {
             GlobalFullUnitReduce::execute::<P, Out, R::Instruction<P>>(
                 input,
