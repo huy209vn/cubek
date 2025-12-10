@@ -199,6 +199,22 @@ mod reduce_dim {
         );
     }
 
+    mod parallel_matrix_xlarge {
+        testgen_reduce!(
+            shape: vec![64, 1024],
+            strides: vec![1024, 1],
+            axis: Some(1),
+        );
+    }
+
+    mod perpendicular_matrix_xlarge {
+        testgen_reduce!(
+            shape: vec![64, 1024],
+            strides: vec![1024, 1],
+            axis: Some(0),
+        );
+    }
+
     mod parallel_rank_three_tensor {
         testgen_reduce!(
             shape: vec![16, 16, 16],
