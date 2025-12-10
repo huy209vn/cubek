@@ -5,7 +5,7 @@ use crate::{
     },
     launch::{ReduceLaunchInfo, ReduceStrategy},
     routines::{
-        CubeReduceBlueprint, PlaneReduceBlueprint, ReduceBlueprint, ReduceBlueprintKind,
+        CubeReduceBlueprint, PlaneReduceBlueprint, ReduceBlueprint, ReduceBlueprintRoutine,
         reduce_kernel_virtual,
     },
 };
@@ -32,27 +32,31 @@ pub(crate) fn launch_reduce<Run: Runtime>(
     dtypes: ReduceDtypes,
     inst: ReduceOperationConfig,
 ) -> Result<(), LaunchError> {
-    let kind = match (strategy.shared, strategy.use_planes) {
-        (true, true) => ReduceBlueprintKind::Cube(CubeReduceBlueprint {
-            accumulator_size: info.cube_dim.y,
-            bound_checks_inner: info.bound_checks_inner,
-            use_planes: true,
-        }),
-        (true, false) => ReduceBlueprintKind::Cube(CubeReduceBlueprint {
-            accumulator_size: info.cube_dim.num_elems(),
-            bound_checks_inner: info.bound_checks_inner,
-            use_planes: false,
-        }),
-        (false, true) => ReduceBlueprintKind::Plane(PlaneReduceBlueprint {
-            bound_checks_inner: info.bound_checks_inner,
-        }),
-        (false, false) => ReduceBlueprintKind::Unit,
+    let routine = match strategy {
+        ReduceStrategy::FullUnit => ReduceBlueprintRoutine::FullUnit,
+        ReduceStrategy::FullPlane { level } => {
+            ReduceBlueprintRoutine::Plane(PlaneReduceBlueprint {
+                bound_checks_inner: info.bound_checks_inner,
+            })
+        }
+        ReduceStrategy::FullCube { use_planes } => match use_planes {
+            true => ReduceBlueprintRoutine::Cube(CubeReduceBlueprint {
+                accumulator_size: info.cube_dim.y,
+                bound_checks_inner: info.bound_checks_inner,
+                use_planes,
+            }),
+            false => ReduceBlueprintRoutine::Cube(CubeReduceBlueprint {
+                accumulator_size: info.cube_dim.num_elems(),
+                bound_checks_inner: info.bound_checks_inner,
+                use_planes,
+            }),
+        },
     };
 
     let blueprint = ReduceBlueprint {
         line_mode: info.line_mode,
         bound_checks: info.bound_checks,
-        kind,
+        routine,
     };
 
     unsafe {

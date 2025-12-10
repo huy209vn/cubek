@@ -4,12 +4,13 @@ use crate::{BoundChecksInner, LineMode};
 pub struct ReduceBlueprint {
     pub line_mode: LineMode,
     pub bound_checks: bool,
-    pub kind: ReduceBlueprintKind,
+    pub routine: ReduceBlueprintRoutine,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ReduceBlueprintKind {
-    Unit,
+pub enum ReduceBlueprintRoutine {
+    /// A single unit reduces a full vector.
+    FullUnit,
     Plane(PlaneReduceBlueprint),
     Cube(CubeReduceBlueprint),
 }

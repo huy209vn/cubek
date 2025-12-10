@@ -1,4 +1,4 @@
-use crate::{ReducePrecision, routines::ReduceBlueprintKind};
+use crate::{ReducePrecision, routines::ReduceBlueprintRoutine};
 use cubecl::{
     prelude::{Numeric, ReadWrite, *},
     std::tensor::r#virtual::VirtualTensor,
@@ -16,5 +16,6 @@ pub trait ReduceDimRoutine {
         #[comptime] config: Self::Config,
     );
 
-    fn create_config(#[comptime] blueprint: ReduceBlueprintKind) -> comptime_type!(Self::Config);
+    fn create_config(#[comptime] blueprint: ReduceBlueprintRoutine)
+    -> comptime_type!(Self::Config);
 }

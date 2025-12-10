@@ -16,9 +16,10 @@ pub mod routines;
 
 mod error;
 
+pub use crate::launch::{PlaneReduceLevel, ReduceStrategy};
 use crate::{
     components::instructions::ReduceOperationConfig,
-    launch::{ReduceLaunchInfo, ReduceStrategy, launch_reduce},
+    launch::{ReduceLaunchInfo, launch_reduce},
 };
 pub use components::{
     args::init_tensors,
@@ -89,15 +90,13 @@ pub fn reduce<R: Runtime>(
     input: TensorHandleRef<R>,
     output: TensorHandleRef<R>,
     axis: usize,
-    strategy: Option<ReduceStrategy>,
+    strategy: ReduceStrategy,
     operation: ReduceOperationConfig,
     dtypes: ReduceDtypes,
 ) -> Result<(), ReduceError> {
     validate_axis(input.shape.len(), axis)?;
     valid_output_shape(input.shape, output.shape, axis)?;
-    let strategy = strategy
-        .map(|s| s.validate(client))
-        .unwrap_or(Ok(ReduceStrategy::new(client, true)))?;
+    let strategy = strategy.validate(client)?;
     let config = ReduceLaunchInfo::generate(client, &input, &output, axis, &strategy, dtypes.input);
 
     if let CubeCount::Static(x, y, z) = config.cube_count {

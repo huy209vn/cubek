@@ -28,10 +28,16 @@ impl ReduceLaunchInfo {
         dtype: StorageType,
     ) -> ReduceLaunchInfo {
         let reduce_count = output.size() as u32;
+        let use_planes = match strategy {
+            ReduceStrategy::FullUnit => false,
+            ReduceStrategy::FullPlane { level } => true,
+            ReduceStrategy::FullCube { use_planes } => *use_planes,
+        };
+
         ReduceLaunchInfo::new()
             .generate_line_mode(input, axis)
             .generate_line_size(client, input, output, axis, dtype)
-            .generate_cube_dim(client, strategy.use_planes)
+            .generate_cube_dim(client, use_planes)
             .generate_cube_count::<R>(reduce_count, strategy)
     }
 
@@ -176,10 +182,11 @@ impl ReduceLaunchInfo {
     ) -> Self {
         let agent_count_per_cube =  // An agent is either a unit, a plane or a whole cube depending on the strategy.
             match strategy {
-                ReduceStrategy { shared: true, .. } => 1,
-                ReduceStrategy { use_planes: true, .. } => self.cube_dim.y,
-                ReduceStrategy { use_planes: false, .. } => self.cube_dim.num_elems(),
+                ReduceStrategy::FullUnit {..} => self.cube_dim.num_elems(),
+                ReduceStrategy::FullPlane {..} => self.cube_dim.y,
+                ReduceStrategy::FullCube { .. } => 1,
             };
+
         let reduce_count_per_cube = match self.line_mode {
             LineMode::Parallel => agent_count_per_cube,
             LineMode::Perpendicular => agent_count_per_cube * self.line_size_input,

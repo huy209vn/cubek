@@ -19,6 +19,7 @@ pub struct ReduceCubeConfig {
 
 impl ReduceCubeConfig {
     pub fn new(input_line_size: u32, line_mode: LineMode, blueprint: CubeReduceBlueprint) -> Self {
+        println!("Use plane {}", blueprint.use_planes);
         Self {
             accumulator_size: blueprint.accumulator_size,
             line_mode,

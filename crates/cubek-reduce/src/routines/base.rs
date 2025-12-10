@@ -1,13 +1,14 @@
 use crate::{
     LineMode,
     components::{
+        global::unit::GlobalFullUnitReduce,
         instructions::*,
         level::{self, cube::ReduceCubeConfig, plane::PlaneReduceConfig, unit::UnitReduce},
         partition::ReducePartition,
         precision::ReducePrecision,
         writer,
     },
-    routines::{ReduceBlueprint, ReduceBlueprintKind},
+    routines::{ReduceBlueprint, ReduceBlueprintRoutine},
 };
 use cubecl::{prelude::*, std::tensor::r#virtual::VirtualTensor};
 
@@ -19,7 +20,7 @@ pub fn reduce_kernel_virtual<In: Numeric, Out: Numeric, Acc: Numeric>(
     #[comptime] blueprint: ReduceBlueprint,
     #[comptime] config: ReduceOperationConfig,
 ) {
-    let reduce_index = get_reduce_index(blueprint.kind);
+    let reduce_index = get_reduce_index(blueprint.routine);
 
     #[allow(clippy::collapsible_if)]
     if comptime![blueprint.bound_checks] {
@@ -56,8 +57,8 @@ fn reduce_kernel_inner<P: ReducePrecision, Out: Numeric, R: ReduceFamily>(
     let input_line_size = input.line_size();
     let inst = &R::Instruction::<P>::from_config(config);
 
-    match comptime!(blueprint.kind) {
-        ReduceBlueprintKind::Cube(cube) => {
+    match comptime!(blueprint.routine) {
+        ReduceBlueprintRoutine::Cube(cube) => {
             let partition = ReducePartition::from_blueprint::<P, Out>(
                 reduce_index,
                 input,
@@ -85,7 +86,7 @@ fn reduce_kernel_inner<P: ReducePrecision, Out: Numeric, R: ReduceFamily>(
                 inst,
             )
         }
-        ReduceBlueprintKind::Plane(plane) => {
+        ReduceBlueprintRoutine::Plane(plane) => {
             let partition = ReducePartition::from_blueprint::<P, Out>(
                 reduce_index,
                 input,
@@ -113,25 +114,25 @@ fn reduce_kernel_inner<P: ReducePrecision, Out: Numeric, R: ReduceFamily>(
                 inst,
             )
         }
-        ReduceBlueprintKind::Unit => {
-            UnitReduce::execute_global::<P, Out, R::Instruction<P>>(
+        ReduceBlueprintRoutine::FullUnit => {
+            GlobalFullUnitReduce::execute::<P, Out, R::Instruction<P>>(
                 input,
                 output,
                 axis_reduce,
                 reduce_index,
                 inst,
                 blueprint,
-            );
+            )
         }
     };
 }
 
 #[cube]
-fn get_reduce_index(#[comptime] params: ReduceBlueprintKind) -> u32 {
+fn get_reduce_index(#[comptime] params: ReduceBlueprintRoutine) -> u32 {
     match params {
-        ReduceBlueprintKind::Unit => ABSOLUTE_POS,
-        ReduceBlueprintKind::Plane { .. } => CUBE_POS * CUBE_DIM_Y + UNIT_POS_Y,
-        ReduceBlueprintKind::Cube { .. } => CUBE_POS,
+        ReduceBlueprintRoutine::FullUnit => ABSOLUTE_POS,
+        ReduceBlueprintRoutine::Plane { .. } => CUBE_POS * CUBE_DIM_Y + UNIT_POS_Y,
+        ReduceBlueprintRoutine::Cube { .. } => CUBE_POS,
     }
 }
 

@@ -42,10 +42,7 @@ impl<R: Runtime, E: Float> Benchmark for ReduceBench<R, E> {
             input.as_ref(),
             out.as_ref(),
             self.axis,
-            Some(ReduceStrategy {
-                use_planes: false,
-                shared: false,
-            }),
+            ReduceStrategy::FullUnit,
             ReduceOperationConfig::Sum,
             cubek::reduce::ReduceDtypes {
                 input: E::as_type_native_unchecked(),

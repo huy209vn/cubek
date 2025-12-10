@@ -4,8 +4,7 @@ macro_rules! testgen_reduce {
         shape: $shape:expr,
         strides: $strides:expr,
         axis: $axis:expr,
-        use_plane: $use_plane:expr,
-        shared: $shared:expr,
+        strategy: $strategy:expr,
     ) => {
         type TestDType = $dtype;
         fn test_shape() -> Vec<usize> {
@@ -18,12 +17,10 @@ macro_rules! testgen_reduce {
             $axis
         }
 
-        fn test_use_plane() -> bool {
-            $use_plane
+        fn test_strategy() -> ReduceStrategy {
+            $strategy
         }
-        fn test_shared() -> bool {
-            $shared
-        }
+
         mod reduce_dim {
             use super::*;
             include!("reduce_dim.rs");
@@ -55,44 +52,52 @@ macro_rules! testgen_reduce {
         strides: $strides:expr,
         axis: $axis:expr,
     ) => {
-        mod shared {
+        use cubek_reduce::{ReduceStrategy, PlaneReduceLevel};
+
+        mod full_cube {
+            use super::*;
+
             testgen_reduce!(
                 dtype: $dtype,
                 shape: $shape,
                 strides: $strides,
                 axis: $axis,
-                use_plane: false,
-                shared: true,
+                strategy: ReduceStrategy::FullCube { use_planes: false },
             );
         }
-        mod shared_plane {
+
+        mod full_cube_plane {
+            use super::*;
+
             testgen_reduce!(
                 dtype: $dtype,
                 shape: $shape,
                 strides: $strides,
                 axis: $axis,
-                use_plane: true,
-                shared: true,
+                strategy: ReduceStrategy::FullCube { use_planes: true },
             );
         }
-        mod plane {
+
+        mod full_plane {
+            use super::*;
+
             testgen_reduce!(
                 dtype: $dtype,
                 shape: $shape,
                 strides: $strides,
                 axis: $axis,
-                use_plane: true,
-                shared: false,
+                strategy: ReduceStrategy::FullPlane { level: PlaneReduceLevel::Plane },
             );
         }
-        mod normal {
+        mod full_unit {
+            use super::*;
+
             testgen_reduce!(
                 dtype: $dtype,
                 shape: $shape,
                 strides: $strides,
                 axis: $axis,
-                use_plane: false,
-                shared: false,
+                strategy: ReduceStrategy::FullUnit,
             );
         }
     };

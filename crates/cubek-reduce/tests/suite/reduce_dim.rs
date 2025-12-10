@@ -1,7 +1,7 @@
 use cubecl::TestRuntime;
 use cubecl::prelude::*;
 use cubek_reduce::components::instructions::ReduceOperationConfig;
-use cubek_reduce::{ReduceDtypes, ReduceError, ReducePrecision, reduce, launch::ReduceStrategy};
+use cubek_reduce::{ReduceDtypes, ReduceError, ReducePrecision, launch::ReduceStrategy, reduce};
 use rand::{
     SeedableRng,
     distr::{Distribution, Uniform},
@@ -40,10 +40,7 @@ fn test_case() -> TestCase {
         shape: test_shape(),
         stride: test_strides(),
         axis: test_axis(),
-        strategy: Some(ReduceStrategy {
-            use_planes: test_use_plane(),
-            shared: test_shared(),
-        }),
+        strategy: test_strategy(),
     }
 }
 
@@ -54,7 +51,7 @@ pub struct TestCase {
     pub shape: Vec<usize>,
     pub stride: Vec<usize>,
     pub axis: Option<usize>,
-    pub strategy: Option<ReduceStrategy>,
+    pub strategy: ReduceStrategy,
 }
 
 impl TestCase {
