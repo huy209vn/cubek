@@ -3,7 +3,7 @@ use crate::{
     components::{
         global::{plane::GlobalFullPlaneReduce, unit::GlobalFullUnitReduce},
         instructions::*,
-        level::{self, cube::ReduceCubeConfig, plane::PlaneReduceConfig, unit::UnitReduce},
+        level::{self, cube::ReduceCubeConfig, plane::PlaneReduceConfig},
         partition::ReducePartition,
         precision::ReducePrecision,
         writer,
@@ -100,6 +100,7 @@ fn reduce_kernel_inner<P: ReducePrecision, Out: Numeric, R: ReduceFamily>(
                     input_line_size,
                     blueprint.line_mode,
                     plane,
+                    false,
                 ));
                 let accumulator = level::plane::reduce::<P, VirtualTensor<P::EI>, R::Instruction<P>>(
                     input, inst, partition, config,

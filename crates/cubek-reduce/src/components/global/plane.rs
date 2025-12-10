@@ -1,10 +1,8 @@
 use crate::{
-    ReduceInstruction, ReducePrecision,
+    LineMode, ReduceInstruction, ReducePrecision,
     components::{
-        level::{
-            ReduceJob,
-            unit::{UnitReduce, UnitReduceConfig},
-        },
+        instructions::reduce_inplace,
+        level::{self, plane::PlaneReduceConfig},
         partition::{PartitionOption, PartitionSplit, ReducePartition},
         writer,
     },
@@ -25,30 +23,33 @@ impl GlobalFullPlaneReduce {
         inst: &I,
         #[comptime] blueprint: ReduceBlueprint,
     ) {
+        let line_mode = blueprint.line_mode;
+        let plane_blueprint = comptime!(match blueprint.global {
+            crate::routines::GlobalReduceBlueprint::FullPlane(b) => b.clone(),
+            _ => panic!(),
+        });
         let input_line_size = input.line_size();
-        let config = comptime!(UnitReduceConfig::new(
-            input.line_size(),
-            blueprint.line_mode
+        let config = comptime!(PlaneReduceConfig::new(
+            input_line_size,
+            line_mode,
+            plane_blueprint,
+            true,
         ));
         let partition = GlobalFullPlaneReduce::partition::<P, Out>(
             reduce_index,
             input,
             output,
             axis_reduce,
-            comptime!(config.clone()),
+            line_mode,
         );
-        let mut accumulator = I::null_accumulator(inst, input_line_size);
 
-        <UnitReduce as ReduceJob<P, I>>::execute(
-            input,
-            inst,
-            partition,
-            &mut accumulator,
-            comptime!(config.clone()),
-        );
+        let accumulator =
+            level::plane::reduce::<P, VirtualTensor<P::EI>, I>(input, inst, partition, config);
 
         let (item, coordinate) = I::read_accumulator(inst, &accumulator);
-        let result = I::reduce(inst, &accumulator, item, coordinate, true);
+
+        let mut result = I::null_accumulator(inst, input_line_size);
+        reduce_inplace::<P, I>(inst, &mut result, item, coordinate, true);
 
         writer::write::<P, Out, I>(
             output,
@@ -66,10 +67,8 @@ impl GlobalFullPlaneReduce {
         input: &VirtualTensor<P::EI>,
         output: &mut VirtualTensor<Out, ReadWrite>,
         axis_reduce: u32,
-        #[comptime] config: UnitReduceConfig,
+        #[comptime] line_mode: LineMode,
     ) -> ReducePartition {
-        let line_mode = config.line_mode;
-
         ReducePartition::new::<P, Out>(
             reduce_index,
             input,

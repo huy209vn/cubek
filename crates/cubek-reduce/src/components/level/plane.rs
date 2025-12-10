@@ -10,14 +10,22 @@ pub struct PlaneReduceConfig {
     line_size: u32,
     line_mode: LineMode,
     bound_checks: BoundChecksInner,
+    /// Whether each plane has independant accumulator.
+    independant: bool,
 }
 
 impl PlaneReduceConfig {
-    pub fn new(input_line_size: u32, line_mode: LineMode, blueprint: PlaneReduceBlueprint) -> Self {
+    pub fn new(
+        input_line_size: u32,
+        line_mode: LineMode,
+        blueprint: PlaneReduceBlueprint,
+        independant: bool,
+    ) -> Self {
         Self {
             line_size: input_line_size,
             line_mode,
             bound_checks: blueprint.bound_checks_inner,
+            independant,
         }
     }
 }
@@ -91,7 +99,13 @@ pub fn reduce<P: ReducePrecision, I: List<Line<P::EI>>, R: ReduceInstruction<P>>
             }
         };
 
-        reduce_inplace::<P, R>(inst, &mut accumulator, item, coordinates, true);
+        reduce_inplace::<P, R>(
+            inst,
+            &mut accumulator,
+            item,
+            coordinates,
+            comptime!(!config.independant),
+        );
 
         first_index += plane_dim * range.index_step;
     }

@@ -26,10 +26,7 @@ impl GlobalFullUnitReduce {
         #[comptime] blueprint: ReduceBlueprint,
     ) {
         let input_line_size = input.line_size();
-        let config = comptime!(UnitReduceConfig::new(
-            input.line_size(),
-            blueprint.line_mode
-        ));
+        let config = comptime!(UnitReduceConfig::new(input_line_size, blueprint.line_mode,));
         let partition = GlobalFullUnitReduce::partition::<P, Out>(
             reduce_index,
             input,
