@@ -1,4 +1,9 @@
 mod matmul_tma {
+    use crate::suite::layered::matmul_test_launcher::InputRepresentation;
+
+    fn input_representation() -> InputRepresentation {
+        InputRepresentation::Tma
+    }
 
     #[cfg(all(feature = "matmul_tests_tma", not(feature = "matmul_tests_mma")))]
     mod cmma {

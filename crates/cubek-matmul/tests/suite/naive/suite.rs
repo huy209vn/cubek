@@ -129,21 +129,9 @@ fn test_naive(case: MatmulTestCase) {
 
     let out = output_test_tensor(&client, &problem, dtype);
 
-    let lhs_handle = MatmulInputHandleRef::Normal(
-        unsafe {
-            TensorHandleRef::from_raw_parts(&lhs.handle, &lhs.strides, &lhs.shape, dtype.size())
-        },
-        dtype.dtype,
-    );
-    let rhs_handle = MatmulInputHandleRef::Normal(
-        unsafe {
-            TensorHandleRef::from_raw_parts(&rhs.handle, &rhs.strides, &rhs.shape, dtype.size())
-        },
-        dtype.dtype,
-    );
-    let out_handle = unsafe {
-        TensorHandleRef::from_raw_parts(&out.handle, &out.strides, &out.shape, dtype.size())
-    };
+    let lhs_handle = MatmulInputHandleRef::Normal(lhs.as_ref(), dtype.dtype);
+    let rhs_handle = MatmulInputHandleRef::Normal(rhs.as_ref(), dtype.dtype);
+    let out_handle = out.as_ref();
 
     naive::launch_ref(
         &client,
