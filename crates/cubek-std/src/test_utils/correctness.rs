@@ -1,46 +1,9 @@
-use cubecl::TestRuntime;
-use cubecl::std::tensor::TensorHandle;
-use cubecl::{CubeElement, client::ComputeClient};
-
-use crate::suite::test_utils::cpu_reference::matmul_cpu_reference;
-use crate::suite::test_utils::new_casted;
-use cubek_matmul::components::{MatmulElems, MatmulProblem};
-
-pub fn assert_result(
-    lhs: &[f32],
-    rhs: &[f32],
-    problem: &MatmulProblem,
-    client: &ComputeClient<TestRuntime>,
-    out: &TensorHandle<TestRuntime>,
-    dtypes: MatmulElems,
-) {
-    let epsilon = matmul_epsilon(&dtypes, 170.);
-
-    let expected = matmul_cpu_reference(lhs, rhs, problem)
-        .into_iter()
-        .collect::<Vec<f32>>();
-
-    if let Err(e) = assert_equals_approx(client, out, &expected, epsilon) {
-        panic!("{}", e);
-    }
-}
-
-fn matmul_epsilon(elems: &MatmulElems, safety_factor: f32) -> f32 {
-    let total_eps = elems.lhs_global.dtype.epsilon()
-        + elems.rhs_global.dtype.epsilon()
-        + elems.acc_global.dtype.epsilon()
-        + elems.lhs_stage.dtype.epsilon()
-        + elems.rhs_stage.dtype.epsilon()
-        + elems.acc_stage.dtype.epsilon()
-        + elems.lhs_register.dtype.epsilon()
-        + elems.rhs_register.dtype.epsilon()
-        + elems.acc_register.dtype.epsilon();
-
-    total_eps as f32 * safety_factor
-}
+use cubecl::{TestRuntime, client::ComputeClient, std::tensor::TensorHandle};
+use crate::test_utils::test_tensor::new_casted;
+use cubecl::CubeElement;
 
 /// Compares the content of a handle to a given slice of f32.
-fn assert_equals_approx(
+pub fn assert_equals_approx(
     client: &ComputeClient<TestRuntime>,
     out: &TensorHandle<TestRuntime>,
     expected: &[f32],

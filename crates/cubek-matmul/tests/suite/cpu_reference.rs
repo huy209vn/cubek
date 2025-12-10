@@ -1,10 +1,48 @@
+use cubecl::TestRuntime;
+use cubecl::std::tensor::TensorHandle;
+use cubecl::{CubeElement, client::ComputeClient};
+use cubek_matmul::components::MatmulElems;
 use cubek_matmul::components::{MatmulIdent, MatmulProblem, MatrixLayout};
+use cubek_std::test_utils::assert_equals_approx;
+
+pub fn assert_result(
+    lhs: &[f32],
+    rhs: &[f32],
+    problem: &MatmulProblem,
+    client: &ComputeClient<TestRuntime>,
+    out: &TensorHandle<TestRuntime>,
+    dtypes: MatmulElems,
+) {
+    let epsilon = matmul_epsilon(&dtypes, 170.);
+
+    let expected = matmul_cpu_reference(lhs, rhs, problem)
+        .into_iter()
+        .collect::<Vec<f32>>();
+
+    if let Err(e) = assert_equals_approx(client, out, &expected, epsilon) {
+        panic!("{}", e);
+    }
+}
+
+fn matmul_epsilon(elems: &MatmulElems, safety_factor: f32) -> f32 {
+    let total_eps = elems.lhs_global.dtype.epsilon()
+        + elems.rhs_global.dtype.epsilon()
+        + elems.acc_global.dtype.epsilon()
+        + elems.lhs_stage.dtype.epsilon()
+        + elems.rhs_stage.dtype.epsilon()
+        + elems.acc_stage.dtype.epsilon()
+        + elems.lhs_register.dtype.epsilon()
+        + elems.rhs_register.dtype.epsilon()
+        + elems.acc_register.dtype.epsilon();
+
+    total_eps as f32 * safety_factor
+}
 
 /// Solves a matmul problem with EG inputs, multiplied as ES and accumulated as EA.
 ///
 /// This is a naive CPU implementation, very slow on large payloads,
 /// not designed to be used for other purposes than testing.
-pub(crate) fn matmul_cpu_reference(lhs: &[f32], rhs: &[f32], problem: &MatmulProblem) -> Vec<f32>
+fn matmul_cpu_reference(lhs: &[f32], rhs: &[f32], problem: &MatmulProblem) -> Vec<f32>
 where
 {
     let m = problem.m;

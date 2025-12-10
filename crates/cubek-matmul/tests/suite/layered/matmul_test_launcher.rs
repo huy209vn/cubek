@@ -1,10 +1,10 @@
 use cubecl::TestRuntime;
 use cubecl::prelude::*;
+use cubecl::std::tensor::TensorHandle;
+use cubek_matmul::components::MatrixLayout;
 use cubek_matmul::components::global::args::TensorMapArgs;
 use cubek_matmul::components::global::args::TensorMapInputs;
 
-use crate::suite::test_utils::output_test_tensor;
-use crate::suite::test_utils::{assert_result, input_test_tensor};
 use cubek_matmul::components::global::args::ConcreteInputsFactory;
 use cubek_matmul::components::{
     MatmulElems,
@@ -20,13 +20,17 @@ use cubek_matmul::{
     MatmulInputHandleRef,
     components::{AvailableLineSizes, MatmulIdent},
 };
+use cubek_std::test_utils::compute_strides;
+use cubek_std::test_utils::random_tensor;
+
+use crate::suite::assert_result;
 
 pub enum InputRepresentation {
     Normal,
     Tma,
 }
 
-// TODO should be always used, remove feature flags
+// TODO should be always used, remove some feature flags
 #[allow(unused)]
 /// Test the correctness of the specified Matmul on the given device,
 /// against a naive CPU implementation over the given problem
@@ -37,21 +41,30 @@ pub fn test_matmul_algorithm<A: Algorithm>(
     dtypes: MatmulElems,
     input_representation: InputRepresentation,
 ) {
-    let (lhs, lhs_data) = input_test_tensor(
+    let lhs_shape = problem.shape(MatmulIdent::Lhs);
+    let rhs_shape = problem.shape(MatmulIdent::Rhs);
+
+    let (lhs, lhs_data) = random_tensor(
         &client,
-        dtypes.lhs_global,
+        *dtypes.lhs_global,
         1234,
-        problem.lhs_layout,
-        problem.shape(MatmulIdent::Lhs),
+        compute_strides(
+            &lhs_shape,
+            matches!(problem.lhs_layout, MatrixLayout::ColMajor),
+        ),
+        lhs_shape,
     );
-    let (rhs, rhs_data) = input_test_tensor(
+    let (rhs, rhs_data) = random_tensor(
         &client,
-        dtypes.rhs_global,
+        *dtypes.rhs_global,
         5678,
-        problem.rhs_layout,
-        problem.shape(MatmulIdent::Rhs),
+        compute_strides(
+            &rhs_shape,
+            matches!(problem.rhs_layout, MatrixLayout::ColMajor),
+        ),
+        rhs_shape,
     );
-    let out = output_test_tensor(&client, &problem, dtypes.acc_global);
+    let out = TensorHandle::zeros(&client, problem.shape(MatmulIdent::Out), *dtypes.acc_global);
 
     problem.lhs_strides = lhs.strides.clone();
     problem.rhs_strides = rhs.strides.clone();
