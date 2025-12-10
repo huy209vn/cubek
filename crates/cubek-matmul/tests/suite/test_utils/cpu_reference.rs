@@ -56,7 +56,7 @@ where
 }
 
 /// Returns the stride of the identified tensor, inferred by the problem definition
-pub(crate) fn strides(problem: &MatmulProblem, ident: MatmulIdent) -> Vec<usize> {
+fn strides(problem: &MatmulProblem, ident: MatmulIdent) -> Vec<usize> {
     let shape = problem.shape(ident);
     let rank = shape.len();
     let mut strides = Vec::with_capacity(rank);

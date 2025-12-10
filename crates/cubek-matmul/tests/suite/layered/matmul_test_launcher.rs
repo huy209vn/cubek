@@ -37,17 +37,6 @@ pub fn test_matmul_algorithm<A: Algorithm>(
     dtypes: MatmulElems,
     input_representation: InputRepresentation,
 ) {
-    let env = std::env::var("CUBEK_TEST_MODE");
-
-    let panic_on_launch_err = match env {
-        Ok(val) => match val.as_str() {
-            "panic" => true,
-            "skip" => false,
-            _ => false,
-        },
-        Err(_) => false,
-    };
-
     let (lhs, lhs_data) = input_test_tensor(
         &client,
         dtypes.lhs_global,
@@ -64,6 +53,38 @@ pub fn test_matmul_algorithm<A: Algorithm>(
     );
     let out = output_test_tensor(&client, &problem, dtypes.acc_global);
 
+    problem.lhs_strides = lhs.strides.clone();
+    problem.rhs_strides = rhs.strides.clone();
+
+    let lhs_handle = MatmulInputHandleRef::Normal(lhs.as_ref(), *dtypes.lhs_global);
+    let rhs_handle = MatmulInputHandleRef::Normal(rhs.as_ref(), *dtypes.rhs_global);
+    let out_handle = out.as_ref();
+
+    if launch_matmul_algorithm::<A>(
+        &client,
+        &problem,
+        selection,
+        &dtypes,
+        input_representation,
+        lhs_handle,
+        rhs_handle,
+        out_handle,
+    ) {
+        assert_result(&lhs_data, &rhs_data, &problem, &client, &out, dtypes);
+    }
+}
+
+/// Returns whether execution succeeded
+pub fn launch_matmul_algorithm<A: Algorithm>(
+    client: &ComputeClient<TestRuntime>,
+    problem: &MatmulProblem,
+    selection: MatmulSelection,
+    dtypes: &MatmulElems,
+    input_representation: InputRepresentation,
+    lhs: MatmulInputHandleRef<TestRuntime>,
+    rhs: MatmulInputHandleRef<TestRuntime>,
+    out: TensorHandleRef<TestRuntime>,
+) -> bool {
     let line_sizes = AvailableLineSizes::from_type_sizes(
         &client,
         dtypes.lhs_global.size(),
@@ -73,8 +94,8 @@ pub fn test_matmul_algorithm<A: Algorithm>(
     let line_sizes = A::filter_line_sizes(line_sizes);
     let line_sizes = match input_representation {
         InputRepresentation::Normal => line_sizes
-            .filter_lhs_with_tensor(&lhs.strides, &lhs.shape, problem.lhs_layout)
-            .filter_rhs_with_tensor(&rhs.strides, &rhs.shape, problem.rhs_layout)
+            .filter_lhs_with_tensor(&lhs.data().strides, &lhs.data().shape, problem.lhs_layout)
+            .filter_rhs_with_tensor(&rhs.data().strides, &rhs.data().shape, problem.rhs_layout)
             .filter_out_with_tensor(&out.strides, &out.shape)
             .pick_max()
             .unwrap(),
@@ -85,6 +106,17 @@ pub fn test_matmul_algorithm<A: Algorithm>(
             .unwrap(),
     };
 
+    let env = std::env::var("CUBEK_TEST_MODE");
+
+    let panic_on_launch_err = match env {
+        Ok(val) => match val.as_str() {
+            "panic" => true,
+            "skip" => false,
+            _ => false,
+        },
+        Err(_) => false,
+    };
+
     let config = match A::setup(&client, &problem, &selection, &line_sizes, &dtypes) {
         Ok(config) => config,
         Err(err) => {
@@ -93,7 +125,7 @@ pub fn test_matmul_algorithm<A: Algorithm>(
                 panic!("{msg}");
             } else {
                 println!("{msg}");
-                return;
+                return false;
             }
         }
     };
@@ -103,46 +135,12 @@ pub fn test_matmul_algorithm<A: Algorithm>(
         || config.cube_dim().num_elems() > props.max_units_per_cube
     {
         println!("Skipping test, too many resources requested");
-        return;
+        return false;
     }
-
-    problem.lhs_strides = lhs.strides.clone();
-    problem.rhs_strides = rhs.strides.clone();
-
-    let lhs_handle = MatmulInputHandleRef::Normal(
-        unsafe {
-            TensorHandleRef::from_raw_parts(
-                &lhs.handle,
-                &lhs.strides,
-                &lhs.shape,
-                dtypes.lhs_global.size(),
-            )
-        },
-        *dtypes.lhs_global,
-    );
-    let rhs_handle = MatmulInputHandleRef::Normal(
-        unsafe {
-            TensorHandleRef::from_raw_parts(
-                &rhs.handle,
-                &rhs.strides,
-                &rhs.shape,
-                dtypes.rhs_global.size(),
-            )
-        },
-        *dtypes.rhs_global,
-    );
-    let out_handle = unsafe {
-        TensorHandleRef::from_raw_parts(
-            &out.handle,
-            &out.strides,
-            &out.shape,
-            dtypes.acc_global.size(),
-        )
-    };
 
     let output = TensorOutput::create(
         &client,
-        &out_handle,
+        &out,
         &selection,
         &problem,
         &line_sizes,
@@ -154,12 +152,12 @@ pub fn test_matmul_algorithm<A: Algorithm>(
         client.properties().hardware.max_cube_count.clone(),
     );
 
-    let result = match input_representation {
+    match input_representation {
         InputRepresentation::Normal => {
             let inputs = TensorInputs::create(
                 &client,
-                &lhs_handle,
-                &rhs_handle,
+                &lhs,
+                &rhs,
                 &selection,
                 &problem,
                 &line_sizes,
@@ -183,8 +181,8 @@ pub fn test_matmul_algorithm<A: Algorithm>(
         InputRepresentation::Tma => {
             let inputs = TensorMapInputs::create(
                 &client,
-                &lhs_handle,
-                &rhs_handle,
+                &lhs,
+                &rhs,
                 &selection,
                 &problem,
                 &line_sizes,
@@ -205,9 +203,6 @@ pub fn test_matmul_algorithm<A: Algorithm>(
                 )
             }
         }
-    };
-
-    if let Ok(_) = result {
-        assert_result(&lhs_data, &rhs_data, &problem, &client, &out, dtypes);
     }
+    .is_ok()
 }
