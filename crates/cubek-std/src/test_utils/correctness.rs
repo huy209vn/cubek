@@ -18,7 +18,7 @@ pub fn assert_equals_approx(
     };
 
     // Obtain the data in f32 for not being generic over type
-    let data_handle = new_casted(client, &out, f32::as_type_native_unchecked());
+    let data_handle = new_casted(client, out, f32::as_type_native_unchecked());
     let data_f32 =
         f32::from_bytes(&client.read_one_tensor(data_handle.as_copy_descriptor())).to_owned();
 
