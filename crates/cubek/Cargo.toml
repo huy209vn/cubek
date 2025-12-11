@@ -22,6 +22,7 @@ default = [
     "cubek-matmul?/default",
     "cubek-convolution?/default",
     "cubek-attention?/default",
+    "cubek-einsum?/default",
 ]
 
 std = [
@@ -31,10 +32,12 @@ std = [
     "cubek-matmul?/std",
     "cubek-convolution?/std",
     "cubek-attention?/std",
+    "cubek-einsum?/std",
 ]
 
 attention = ["cubek-attention"]
 convolution = ["cubek-convolution"]
+einsum = ["cubek-einsum"]
 matmul = ["cubek-matmul"]
 quantization = ["cubek-quant/kernels"]
 random = ["cubek-random"]
@@ -44,6 +47,7 @@ reduce = ["cubek-reduce"]
 cubecl = { workspace = true }
 cubek-attention = { path = "../cubek-attention", version = "0.0.1", default-features = false, optional = true }
 cubek-convolution = { path = "../cubek-convolution", version = "0.0.1", default-features = false, optional = true }
+cubek-einsum = { path = "../cubek-einsum", version = "0.0.1", default-features = false, optional = true }
 cubek-matmul = { path = "../cubek-matmul", version = "0.0.1", default-features = false, optional = true }
 cubek-quant = { path = "../cubek-quant", version = "0.0.1", default-features = false, optional = true }
 cubek-random = { path = "../cubek-random", version = "0.0.1", default-features = false, optional = true }

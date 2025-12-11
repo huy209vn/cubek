@@ -16,4 +16,7 @@ pub use cubek_convolution as convolution;
 #[cfg(feature = "attention")]
 pub use cubek_attention as attention;
 
+#[cfg(feature = "einsum")]
+pub use cubek_einsum as einsum;
+
 pub use cubecl;
