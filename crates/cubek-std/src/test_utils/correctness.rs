@@ -1,6 +1,6 @@
-use cubecl::{TestRuntime, client::ComputeClient, std::tensor::TensorHandle};
 use crate::test_utils::test_tensor::new_casted;
 use cubecl::CubeElement;
+use cubecl::{TestRuntime, client::ComputeClient, std::tensor::TensorHandle};
 
 /// Compares the content of a handle to a given slice of f32.
 pub fn assert_equals_approx(
