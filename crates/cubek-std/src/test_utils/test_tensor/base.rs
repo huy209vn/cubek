@@ -22,7 +22,7 @@ pub fn random_tensor(
     let tensor_handle = TensorHandle::empty(client, vec![flat_len], dtype);
 
     cubek_random::random_uniform(
-        &client,
+        client,
         f32::from_int(-1),
         f32::from_int(1),
         tensor_handle.as_ref(),
@@ -56,6 +56,7 @@ fn reorder_by_strides(flat: &[f32], shape: &[usize], strides: &[usize]) -> Vec<f
     let rank = shape.len();
     let mut index = vec![0usize; rank];
 
+    #[allow(clippy::needless_range_loop)]
     for logical_flat_idx in 0..total {
         // Compute multi-dim index in row-major order
         let mut remaining = logical_flat_idx;
