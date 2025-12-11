@@ -113,7 +113,7 @@ fn launch_attention_algorithm<A: Algorithm>(
     value: TensorHandle<TestRuntime>,
     mask: Option<TensorHandle<TestRuntime>>,
     out: &TensorHandle<TestRuntime>,
-    dtypes: &AttentionElems
+    dtypes: &AttentionElems,
 ) -> bool {
     let cube_count_plan = blueprint.cube_count_plan(&problem);
 
