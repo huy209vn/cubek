@@ -145,7 +145,7 @@ pub fn is_diagonal_extract(notation: &EinsumNotation) -> Option<DiagonalConfig> 
     let output = notation.output();
 
     let input_indices: Vec<char> = input.named_indices().collect();
-    let output_indices: Vec<char> = output.named_indices().collect();
+    let _output_indices: Vec<char> = output.named_indices().collect();
 
     // Find repeated indices in input
     let mut seen: BTreeSet<char> = BTreeSet::new();

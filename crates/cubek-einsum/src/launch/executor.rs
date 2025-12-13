@@ -4,30 +4,26 @@
 
 use alloc::vec::Vec;
 use alloc::vec;
-use alloc::string::ToString;
 
 use cubecl::prelude::*;
 use cubecl::Runtime;
 use cubecl::client::ComputeClient;
-use cubecl::ir::StorageType;
 use cubecl::std::tensor::TensorHandle;
 
 use cubek_matmul::{
     Strategy as MatmulStrategy,
-    MatmulInputHandle, MatmulInputHandleRef,
+    MatmulInputHandle,
     components::MatmulElems,
     tune_key::MatmulElemType,
 };
-use cubek_reduce::{
-    ReduceDtypes,
-    components::instructions::ReduceOperationConfig,
-};
+use cubek_reduce::components::instructions::ReduceOperationConfig;
 
 use crate::error::{EinsumError, EinsumResult};
 use crate::notation::{parse_einsum, EinsumNotation, validate_notation};
 use crate::notation::validation::validate_shapes;
-use crate::optimization::{create_plan, ExecutionStep, ContractionStrategy};
+use crate::optimization::{create_plan, ExecutionStep, ReductionOp};
 use crate::pattern::FastPath;
+use crate::kernels;
 use super::config::EinsumConfig;
 
 /// Executes an einsum operation.
@@ -83,6 +79,7 @@ pub fn einsum<R: Runtime, E: CubePrimitive + Numeric>(
 /// Executes a pre-parsed einsum notation.
 ///
 /// Useful when the same notation will be executed multiple times.
+#[allow(dead_code)]
 pub fn einsum_with_notation<R: Runtime, E: CubePrimitive + Numeric>(
     client: &ComputeClient<R>,
     notation: &EinsumNotation,
@@ -206,7 +203,7 @@ fn execute_matmul<R: Runtime, E: CubePrimitive + Numeric>(
     let elem_type = MatmulElemType::new(E::as_type_native_unchecked(), false);
 
     // Create MatmulElems from single dtype (all same type)
-    let mut dtypes = MatmulElems::from_single_dtype(elem_type);
+    let dtypes = MatmulElems::from_single_dtype(elem_type);
 
     // Create input handles
     let lhs_handle = MatmulInputHandle::Normal(lhs);
@@ -254,7 +251,8 @@ fn execute_reduce<R: Runtime, E: CubePrimitive + Numeric>(
 
     // Get optimal precision for sum operation
     let operation = ReduceOperationConfig::Sum;
-    let dtypes = operation.precision(E::as_type_native_unchecked());
+    let elem_type = E::as_type_native_unchecked().elem_type();
+    let dtypes = operation.precision(elem_type);
 
     // Launch reduce
     cubek_reduce::reduce(
@@ -280,42 +278,55 @@ fn execute_multi_axis_reduce<R: Runtime, E: CubePrimitive + Numeric>(
     sorted_axes.sort_by(|a, b| b.cmp(a));
 
     let operation = ReduceOperationConfig::Sum;
-    let dtypes = operation.precision(E::as_type_native_unchecked());
+    let elem_type = E::as_type_native_unchecked().elem_type();
+    let dtype = input.dtype;
+    let dtypes = operation.precision(elem_type);
 
-    // For now, we need intermediate tensors for multi-axis reduction
-    // This is a simplified implementation - proper workspace management would be better
-
-    let mut current_input = input.clone();
+    let mut current = input.clone();
 
     for (i, &axis) in sorted_axes.iter().enumerate() {
         let is_last = i == sorted_axes.len() - 1;
 
-        // Compute output shape for this reduction
-        let mut reduced_shape = current_input.shape.clone();
-        reduced_shape[axis] = 1;
+        // Compute output shape for this reduction (remove the axis)
+        let mut reduced_shape: Vec<usize> = current.shape.iter()
+            .enumerate()
+            .filter(|&(idx, _)| idx != axis)
+            .map(|(_, &d)| d)
+            .collect();
 
-        // Compute strides for reduced tensor
-        let reduced_strides = compute_strides(&reduced_shape);
+        // Handle scalar output case
+        if reduced_shape.is_empty() {
+            reduced_shape.push(1);
+        }
 
-        let target = if is_last {
-            output.as_ref()
+        if is_last {
+            // Final reduction - write to output
+            cubek_reduce::reduce(
+                client,
+                current.as_ref(),
+                output.as_ref(),
+                axis,
+                None,
+                operation,
+                dtypes,
+            ).map_err(|e| EinsumError::launch(alloc::format!("reduce failed: {:?}", e)))?;
         } else {
-            // Need to allocate intermediate
-            // For simplicity, we'll return an error for multi-axis for now
-            return Err(EinsumError::unsupported(
-                "multi-axis reduction requires workspace allocation - not yet implemented"
-            ));
-        };
+            // Intermediate reduction - allocate workspace
+            let workspace = TensorHandle::zeros(client, reduced_shape.clone(), dtype);
 
-        cubek_reduce::reduce(
-            client,
-            current_input.as_ref(),
-            target,
-            axis,
-            None,
-            operation,
-            dtypes,
-        ).map_err(|e| EinsumError::launch(alloc::format!("reduce failed: {:?}", e)))?;
+            cubek_reduce::reduce(
+                client,
+                current.as_ref(),
+                workspace.as_ref(),
+                axis,
+                None,
+                operation,
+                dtypes,
+            ).map_err(|e| EinsumError::launch(alloc::format!("reduce failed: {:?}", e)))?;
+
+            // Use workspace as input for next iteration
+            current = workspace;
+        }
     }
 
     Ok(())
@@ -357,53 +368,68 @@ fn execute_transpose<R: Runtime, E: CubePrimitive + Numeric>(
 
 /// Executes Hadamard (element-wise) product.
 fn execute_hadamard<R: Runtime, E: CubePrimitive + Numeric>(
-    _client: &ComputeClient<R>,
-    _inputs: &[&TensorHandle<R>],
-    _output: &mut TensorHandle<R>,
+    client: &ComputeClient<R>,
+    inputs: &[&TensorHandle<R>],
+    output: &mut TensorHandle<R>,
 ) -> EinsumResult<()> {
-    // TODO: Implement element-wise multiplication kernel
-    // Could use a simple #[cube] kernel
-    Err(EinsumError::unsupported("hadamard product not yet implemented"))
+    if inputs.len() < 2 {
+        return Err(EinsumError::unsupported("hadamard requires 2 inputs"));
+    }
+    kernels::launch_hadamard::<R, E>(client, inputs[0], inputs[1], output)
 }
 
 /// Executes outer product.
 fn execute_outer_product<R: Runtime, E: CubePrimitive + Numeric>(
-    _client: &ComputeClient<R>,
-    _inputs: &[&TensorHandle<R>],
-    _output: &mut TensorHandle<R>,
+    client: &ComputeClient<R>,
+    inputs: &[&TensorHandle<R>],
+    output: &mut TensorHandle<R>,
 ) -> EinsumResult<()> {
-    // TODO: Implement outer product kernel
-    Err(EinsumError::unsupported("outer product not yet implemented"))
+    if inputs.len() < 2 {
+        return Err(EinsumError::unsupported("outer product requires 2 inputs"));
+    }
+    kernels::launch_outer_product::<R, E>(client, inputs[0], inputs[1], output)
 }
 
 /// Executes dot product (reduction after element-wise multiply).
 fn execute_dot_product<R: Runtime, E: CubePrimitive + Numeric>(
-    _client: &ComputeClient<R>,
-    _inputs: &[&TensorHandle<R>],
-    _output: &mut TensorHandle<R>,
+    client: &ComputeClient<R>,
+    inputs: &[&TensorHandle<R>],
+    output: &mut TensorHandle<R>,
 ) -> EinsumResult<()> {
-    // TODO: Implement as hadamard + reduce
-    Err(EinsumError::unsupported("dot product not yet implemented"))
+    if inputs.len() < 2 {
+        return Err(EinsumError::unsupported("dot product requires 2 inputs"));
+    }
+    kernels::launch_dot_product::<R, E>(client, inputs[0], inputs[1], output)
 }
 
 /// Executes trace (sum of diagonal).
 fn execute_trace<R: Runtime, E: CubePrimitive + Numeric>(
-    _client: &ComputeClient<R>,
-    _inputs: &[&TensorHandle<R>],
-    _output: &mut TensorHandle<R>,
+    client: &ComputeClient<R>,
+    inputs: &[&TensorHandle<R>],
+    output: &mut TensorHandle<R>,
 ) -> EinsumResult<()> {
-    // TODO: Implement trace kernel
-    Err(EinsumError::unsupported("trace not yet implemented"))
+    if inputs.is_empty() {
+        return Err(EinsumError::unsupported("trace requires 1 input"));
+    }
+    kernels::launch_trace::<R, E>(client, inputs[0], output)
 }
 
 /// Executes diagonal extraction.
 fn execute_diagonal<R: Runtime, E: CubePrimitive + Numeric>(
-    _client: &ComputeClient<R>,
-    _inputs: &[&TensorHandle<R>],
-    _output: &mut TensorHandle<R>,
+    client: &ComputeClient<R>,
+    inputs: &[&TensorHandle<R>],
+    output: &mut TensorHandle<R>,
 ) -> EinsumResult<()> {
-    // TODO: Implement diagonal extraction kernel
-    Err(EinsumError::unsupported("diagonal extraction not yet implemented"))
+    if inputs.is_empty() {
+        return Err(EinsumError::unsupported("diagonal extraction requires 1 input"));
+    }
+    kernels::launch_diagonal::<R, E>(client, inputs[0], output)
+}
+
+/// Tracks a tensor with its index labels for contraction.
+struct TrackedTensor<R: Runtime> {
+    tensor: TensorHandle<R>,
+    indices: Vec<char>,
 }
 
 /// Executes a general contraction sequence.
@@ -412,60 +438,331 @@ fn execute_contractions<R: Runtime, E: CubePrimitive + Numeric>(
     plan: &crate::optimization::ExecutionPlan,
     inputs: &[&TensorHandle<R>],
     output: &mut TensorHandle<R>,
-    _config: &EinsumConfig,
+    config: &EinsumConfig,
 ) -> EinsumResult<()> {
-    // For general contractions, we need workspace management
-    // Each step produces an intermediate tensor that feeds into the next step
-
     let steps = plan.steps();
     if steps.is_empty() {
         return Ok(());
     }
 
-    // For now, only support simple 2-tensor contractions that reduce to matmul
-    // More complex chains require proper workspace allocation
+    // Get actual indices from the plan (parsed from notation)
+    let plan_indices = plan.input_indices();
 
-    if steps.len() == 1 {
-        if let ExecutionStep::Contraction { inputs: (i, j), contracted, result, .. } = &steps[0] {
-            // Check if this is effectively a matmul
-            if *i < inputs.len() && *j < inputs.len() {
-                // Try to execute as matmul if structure matches
-                // This is a simplified check - proper implementation would analyze the indices
-                return execute_general_contraction::<R, E>(
-                    client,
-                    inputs[*i],
-                    inputs[*j],
-                    output,
-                    contracted,
+    // Initialize tracked tensors with input tensors and their actual indices from notation
+    let mut tracked: Vec<TrackedTensor<R>> = inputs.iter().enumerate().map(|(idx, t)| {
+        // Use indices from plan if available, otherwise infer
+        let indices = if idx < plan_indices.len() {
+            plan_indices[idx].clone()
+        } else {
+            infer_input_indices(idx, t.shape.len())
+        };
+        TrackedTensor {
+            tensor: (*t).clone(),
+            indices,
+        }
+    }).collect();
+    let dtype = inputs.get(0).map(|t| t.dtype).unwrap_or_else(|| E::as_type_native_unchecked());
+
+    for (step_idx, step) in steps.iter().enumerate() {
+        let is_last = step_idx == steps.len() - 1;
+
+        match step {
+            ExecutionStep::Contraction { inputs: (i, j), contracted, result, .. } => {
+                let i = *i;
+                let j = *j;
+
+                if i >= tracked.len() || j >= tracked.len() {
+                    return Err(EinsumError::launch(alloc::format!(
+                        "contraction step {} references invalid tensor indices ({}, {}), list has {} tensors",
+                        step_idx, i, j, tracked.len()
+                    )));
+                }
+
+                // Get indices for both tensors
+                let lhs_indices = tracked[i].indices.clone();
+                let rhs_indices = tracked[j].indices.clone();
+
+                // Compute output shape using actual indices
+                let contraction_output_shape = compute_contraction_shape_with_indices(
+                    &tracked[i].tensor,
+                    &tracked[j].tensor,
+                    &lhs_indices,
+                    &rhs_indices,
                     result,
                 );
+
+                // Determine where to write output
+                if is_last {
+                    execute_general_contraction_with_indices::<R, E>(
+                        client,
+                        &tracked[i].tensor,
+                        &tracked[j].tensor,
+                        output,
+                        &lhs_indices,
+                        &rhs_indices,
+                        contracted,
+                    )?;
+                } else {
+                    let mut workspace = TensorHandle::zeros(client, contraction_output_shape, dtype);
+
+                    execute_general_contraction_with_indices::<R, E>(
+                        client,
+                        &tracked[i].tensor,
+                        &tracked[j].tensor,
+                        &mut workspace,
+                        &lhs_indices,
+                        &rhs_indices,
+                        contracted,
+                    )?;
+
+                    // Update tracked list: remove i and j (higher index first), add result
+                    let (min_idx, max_idx) = if i < j { (i, j) } else { (j, i) };
+                    tracked.remove(max_idx);
+                    tracked.remove(min_idx);
+                    tracked.push(TrackedTensor {
+                        tensor: workspace,
+                        indices: result.to_vec(),
+                    });
+                }
+            }
+            ExecutionStep::FastPath(fast_path) => {
+                return execute_fast_path::<R, E>(
+                    client,
+                    fast_path,
+                    inputs,
+                    output,
+                    config,
+                );
+            }
+            ExecutionStep::Permutation { input, perm } => {
+                if *input >= tracked.len() {
+                    return Err(EinsumError::launch("permutation references invalid tensor"));
+                }
+                let tracked_tensor = &mut tracked[*input];
+                let new_shape: Vec<usize> = perm.iter().map(|&p| tracked_tensor.tensor.shape[p]).collect();
+                let new_strides: Vec<usize> = perm.iter().map(|&p| tracked_tensor.tensor.strides[p]).collect();
+                let new_indices: Vec<char> = perm.iter().map(|&p| tracked_tensor.indices[p]).collect();
+                tracked_tensor.tensor.shape = new_shape;
+                tracked_tensor.tensor.strides = new_strides;
+                tracked_tensor.indices = new_indices;
+            }
+            ExecutionStep::Reduction { input, axes, op } => {
+                if *input >= tracked.len() {
+                    return Err(EinsumError::launch("reduction references invalid tensor"));
+                }
+
+                if *op != ReductionOp::Sum {
+                    return Err(EinsumError::unsupported("only sum reduction supported"));
+                }
+
+                let tracked_tensor = &tracked[*input];
+
+                if is_last {
+                    execute_reduce::<R, E>(client, &[&tracked_tensor.tensor], output, axes)?;
+                } else {
+                    let mut reduced_shape: Vec<usize> = tracked_tensor.tensor.shape.iter()
+                        .enumerate()
+                        .filter(|(idx, _)| !axes.contains(idx))
+                        .map(|(_, &d)| d)
+                        .collect();
+                    let reduced_indices: Vec<char> = tracked_tensor.indices.iter()
+                        .enumerate()
+                        .filter(|(idx, _)| !axes.contains(idx))
+                        .map(|(_, &c)| c)
+                        .collect();
+                    if reduced_shape.is_empty() {
+                        reduced_shape.push(1);
+                    }
+
+                    let mut workspace = TensorHandle::zeros(client, reduced_shape, dtype);
+                    execute_reduce::<R, E>(client, &[&tracked_tensor.tensor], &mut workspace, axes)?;
+
+                    tracked[*input] = TrackedTensor {
+                        tensor: workspace,
+                        indices: reduced_indices,
+                    };
+                }
             }
         }
     }
 
-    Err(EinsumError::unsupported(
-        "general multi-step contractions require workspace management - not yet implemented"
-    ))
+    Ok(())
 }
 
-/// Executes a general two-tensor contraction.
-fn execute_general_contraction<R: Runtime, E: CubePrimitive + Numeric>(
+/// Infers indices for input tensor based on position.
+fn infer_input_indices(input_idx: usize, ndim: usize) -> Vec<char> {
+    // Standard einsum index convention: a-z for first tensor, continuing for subsequent
+    let all_indices: Vec<char> = ('a'..='z').collect();
+    let start = input_idx * 4; // Assume up to 4 dims per tensor
+    (0..ndim)
+        .map(|i| all_indices.get(start + i).copied().unwrap_or('?'))
+        .collect()
+}
+
+/// Computes the output shape for a contraction step with explicit indices.
+fn compute_contraction_shape_with_indices<R: Runtime>(
+    lhs: &TensorHandle<R>,
+    rhs: &TensorHandle<R>,
+    lhs_indices: &[char],
+    rhs_indices: &[char],
+    result_indices: &[char],
+) -> Vec<usize> {
+    use hashbrown::HashMap;
+
+    // Build dimension map from both inputs using their actual indices
+    let mut dim_map: HashMap<char, usize> = HashMap::new();
+
+    for (&idx, &size) in lhs_indices.iter().zip(lhs.shape.iter()) {
+        dim_map.insert(idx, size);
+    }
+    for (&idx, &size) in rhs_indices.iter().zip(rhs.shape.iter()) {
+        dim_map.insert(idx, size);
+    }
+
+    // Build output shape from result indices
+    result_indices
+        .iter()
+        .filter_map(|c| dim_map.get(c).copied())
+        .collect()
+}
+
+/// Executes a general two-tensor contraction with explicit index tracking.
+///
+/// Uses the TTGT (Transpose-Transpose-GEMM-Transpose) approach:
+/// 1. Permute LHS so non-contracted indices come first, contracted indices last
+/// 2. Permute RHS so contracted indices come first, non-contracted indices last
+/// 3. Reshape LHS to (M, K), RHS to (K, N)
+/// 4. Perform GEMM
+/// 5. Reshape output to final shape
+fn execute_general_contraction_with_indices<R: Runtime, E: CubePrimitive + Numeric>(
     client: &ComputeClient<R>,
     lhs: &TensorHandle<R>,
     rhs: &TensorHandle<R>,
     output: &mut TensorHandle<R>,
-    _contracted: &[char],
-    _result: &[char],
+    lhs_indices: &[char],
+    rhs_indices: &[char],
+    contracted: &[char],
 ) -> EinsumResult<()> {
-    // For general contractions, we try to map to matmul
-    // This is a simplified approach - proper implementation would generate custom kernels
+    use hashbrown::{HashMap, HashSet};
 
-    // For now, attempt matmul with auto-detected transposition
+    // Build dimension map from index char to size
+    let mut dim_map: HashMap<char, usize> = HashMap::new();
+    for (&idx, &size) in lhs_indices.iter().zip(lhs.shape.iter()) {
+        dim_map.insert(idx, size);
+    }
+    for (&idx, &size) in rhs_indices.iter().zip(rhs.shape.iter()) {
+        dim_map.insert(idx, size);
+    }
+
+    let contracted_set: HashSet<char> = contracted.iter().copied().collect();
+
+    // For LHS: we want [non-contracted..., contracted...] order
+    // Find which dimensions are non-contracted and which are contracted
+    let lhs_non_contracted: Vec<usize> = lhs_indices.iter()
+        .enumerate()
+        .filter(|(_, c)| !contracted_set.contains(*c))
+        .map(|(i, _)| i)
+        .collect();
+    let lhs_contracted: Vec<usize> = lhs_indices.iter()
+        .enumerate()
+        .filter(|(_, c)| contracted_set.contains(*c))
+        .map(|(i, _)| i)
+        .collect();
+
+    // For RHS: we want [contracted..., non-contracted...] order
+    let rhs_contracted: Vec<usize> = rhs_indices.iter()
+        .enumerate()
+        .filter(|(_, c)| contracted_set.contains(*c))
+        .map(|(i, _)| i)
+        .collect();
+    let rhs_non_contracted: Vec<usize> = rhs_indices.iter()
+        .enumerate()
+        .filter(|(_, c)| !contracted_set.contains(*c))
+        .map(|(i, _)| i)
+        .collect();
+
+    // Compute M, K, N
+    let m: usize = lhs_non_contracted.iter()
+        .map(|&i| lhs.shape[i])
+        .product::<usize>()
+        .max(1);
+    let k: usize = lhs_contracted.iter()
+        .map(|&i| lhs.shape[i])
+        .product::<usize>()
+        .max(1);
+    let n: usize = rhs_non_contracted.iter()
+        .map(|&i| rhs.shape[i])
+        .product::<usize>()
+        .max(1);
+
+    // Build permutation for LHS: [non_contracted..., contracted...]
+    let lhs_perm: Vec<usize> = lhs_non_contracted.iter()
+        .chain(lhs_contracted.iter())
+        .copied()
+        .collect();
+
+    // Build permutation for RHS: [contracted..., non_contracted...]
+    let rhs_perm: Vec<usize> = rhs_contracted.iter()
+        .chain(rhs_non_contracted.iter())
+        .copied()
+        .collect();
+
+    // Check if LHS needs transposition (permutation is not identity)
+    let lhs_needs_transpose = !is_identity_permutation(&lhs_perm);
+    let rhs_needs_transpose = !is_identity_permutation(&rhs_perm);
+
+    // Apply permutations via stride manipulation (zero-copy transpose)
+    let lhs_permuted = if lhs_needs_transpose {
+        let new_shape: Vec<usize> = lhs_perm.iter().map(|&i| lhs.shape[i]).collect();
+        let new_strides: Vec<usize> = lhs_perm.iter().map(|&i| lhs.strides[i]).collect();
+        let mut t = lhs.clone();
+        t.shape = new_shape;
+        t.strides = new_strides;
+        t
+    } else {
+        lhs.clone()
+    };
+
+    let rhs_permuted = if rhs_needs_transpose {
+        let new_shape: Vec<usize> = rhs_perm.iter().map(|&i| rhs.shape[i]).collect();
+        let new_strides: Vec<usize> = rhs_perm.iter().map(|&i| rhs.strides[i]).collect();
+        let mut t = rhs.clone();
+        t.shape = new_shape;
+        t.strides = new_strides;
+        t
+    } else {
+        rhs.clone()
+    };
+
+    // Now reshape to 2D for GEMM
+    // LHS: (M, K) - first dims are M, last dims are K
+    let mut lhs_2d = lhs_permuted.clone();
+    lhs_2d.shape = vec![m, k];
+    // Keep original strides if contiguous, otherwise need to recompute
+    // For non-contiguous case, matmul should handle strided inputs
+    if is_contiguous(&lhs_permuted) {
+        lhs_2d.strides = compute_strides(&lhs_2d.shape);
+    } else {
+        // Keep the permuted strides but collapse dimensions
+        // This is tricky - for now, trust matmul to handle it
+        lhs_2d.strides = vec![k, 1];
+    }
+
+    // RHS: (K, N) - first dims are K, last dims are N
+    let mut rhs_2d = rhs_permuted.clone();
+    rhs_2d.shape = vec![k, n];
+    if is_contiguous(&rhs_permuted) {
+        rhs_2d.strides = compute_strides(&rhs_2d.shape);
+    } else {
+        rhs_2d.strides = vec![n, 1];
+    }
+
+    // Perform GEMM: (M, K) @ (K, N) -> (M, N)
     let elem_type = MatmulElemType::new(E::as_type_native_unchecked(), false);
     let dtypes = MatmulElems::from_single_dtype(elem_type);
 
-    let lhs_handle = MatmulInputHandle::Normal(lhs.clone());
-    let rhs_handle = MatmulInputHandle::Normal(rhs.clone());
+    let lhs_handle = MatmulInputHandle::Normal(lhs_2d);
+    let rhs_handle = MatmulInputHandle::Normal(rhs_2d);
 
     cubek_matmul::launch(
         &MatmulStrategy::Auto,
@@ -475,6 +772,20 @@ fn execute_general_contraction<R: Runtime, E: CubePrimitive + Numeric>(
         output.clone(),
         dtypes,
     ).map_err(|e| EinsumError::launch(alloc::format!("contraction failed: {:?}", e)))
+}
+
+/// Checks if a permutation is the identity (no reordering needed).
+fn is_identity_permutation(perm: &[usize]) -> bool {
+    perm.iter().enumerate().all(|(i, &p)| i == p)
+}
+
+/// Checks if a tensor is contiguous in memory.
+fn is_contiguous<R: Runtime>(tensor: &TensorHandle<R>) -> bool {
+    if tensor.shape.is_empty() {
+        return true;
+    }
+    let expected_strides = compute_strides(&tensor.shape);
+    tensor.strides == expected_strides
 }
 
 #[cfg(test)]

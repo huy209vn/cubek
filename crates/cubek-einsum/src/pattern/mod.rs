@@ -49,12 +49,12 @@ pub fn recognize_pattern(notation: &EinsumNotation) -> Option<FastPath> {
         }
 
         // Check diagonal extraction
-        if let Some(config) = is_diagonal_extract(notation) {
+        if is_diagonal_extract(notation).is_some() {
             return Some(FastPath::DiagonalExtract);
         }
 
         // Check reduction
-        if let Some((axes, op)) = is_reduction(notation) {
+        if let Some((axes, _op)) = is_reduction(notation) {
             return Some(FastPath::Reduce { axes, op: fast_path::ReduceOp::Sum });
         }
     }

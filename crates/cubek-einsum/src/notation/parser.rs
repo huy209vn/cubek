@@ -3,7 +3,6 @@
 //! Parses strings like "ij,jk->ik" into structured EinsumNotation.
 
 use alloc::vec::Vec;
-use alloc::string::String;
 
 use super::subscript::Subscript;
 use super::notation::EinsumNotation;
@@ -151,6 +150,7 @@ fn infer_output(inputs: &[Subscript]) -> EinsumResult<Subscript> {
 /// Parses multiple einsum operations (for potential fusion).
 ///
 /// Format: "ij,jk->ik; ik,kl->il"
+#[allow(dead_code)]
 pub fn parse_einsum_chain(notation: &str) -> EinsumResult<Vec<EinsumNotation>> {
     notation
         .split(';')

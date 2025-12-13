@@ -1,21 +1,28 @@
 //! Execution plan for einsum operations.
 
+use alloc::vec;
 use alloc::vec::Vec;
 
 use super::cost::CostModel;
 use super::greedy::greedy_path;
 use super::dynamic::{optimal_path, MAX_DP_TENSORS};
+use super::branch_bound::branch_bound_path;
 use super::path::ContractionPath;
 use crate::notation::EinsumNotation;
 use crate::pattern::FastPath;
+
+/// Maximum tensors for branch and bound before fallback to greedy.
+const MAX_BB_TENSORS: usize = 20;
 
 /// Strategy for finding contraction paths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ContractionStrategy {
     /// Greedy algorithm - fast O(n³) heuristic.
     Greedy,
-    /// Optimal dynamic programming - exponential but optimal.
+    /// Optimal dynamic programming - exponential but optimal for small n.
     Optimal,
+    /// Branch and bound - good balance for medium n.
+    BranchBound,
     /// Automatically choose based on problem size.
     #[default]
     Auto,
@@ -75,6 +82,8 @@ pub struct ExecutionPlan {
     output_shape: Vec<usize>,
     /// Whether a fast path is used.
     uses_fast_path: bool,
+    /// Initial input indices from notation (for multi-step contractions).
+    input_indices: Vec<Vec<char>>,
 }
 
 impl ExecutionPlan {
@@ -85,6 +94,7 @@ impl ExecutionPlan {
             total_flops: flops,
             output_shape,
             uses_fast_path: true,
+            input_indices: Vec::new(),
         }
     }
 
@@ -92,6 +102,7 @@ impl ExecutionPlan {
     pub fn from_contraction_path(
         path: ContractionPath,
         output_shape: Vec<usize>,
+        input_indices: Vec<Vec<char>>,
     ) -> Self {
         let total_flops = path.total_flops();
         let steps: Vec<ExecutionStep> = path
@@ -110,6 +121,7 @@ impl ExecutionPlan {
             total_flops,
             output_shape,
             uses_fast_path: false,
+            input_indices,
         }
     }
 
@@ -137,6 +149,11 @@ impl ExecutionPlan {
     pub fn num_steps(&self) -> usize {
         self.steps.len()
     }
+
+    /// Returns the initial input indices from the notation.
+    pub fn input_indices(&self) -> &[Vec<char>] {
+        &self.input_indices
+    }
 }
 
 /// Creates an execution plan for an einsum operation.
@@ -160,29 +177,50 @@ pub fn create_plan(
 
     // No fast path - use contraction path optimization
     let cost_model = CostModel::default();
+    let n = notation.num_inputs();
     let path = match strategy {
         ContractionStrategy::Greedy => greedy_path(notation, shapes, &cost_model),
         ContractionStrategy::Optimal => {
-            if notation.num_inputs() <= MAX_DP_TENSORS {
+            if n <= MAX_DP_TENSORS {
                 optimal_path(notation, shapes, &cost_model)
             } else {
                 greedy_path(notation, shapes, &cost_model)
             }
         }
-        ContractionStrategy::Auto => {
-            if notation.num_inputs() <= 4 {
-                optimal_path(notation, shapes, &cost_model)
-            } else if notation.num_inputs() <= MAX_DP_TENSORS {
-                // Could use branch-and-bound here
-                optimal_path(notation, shapes, &cost_model)
+        ContractionStrategy::BranchBound => {
+            if n <= MAX_BB_TENSORS {
+                branch_bound_path(notation, shapes, &cost_model)
             } else {
+                greedy_path(notation, shapes, &cost_model)
+            }
+        }
+        ContractionStrategy::Auto => {
+            if n <= 4 {
+                // Small problems: use DP for optimal solution
+                optimal_path(notation, shapes, &cost_model)
+            } else if n <= MAX_DP_TENSORS {
+                // Medium problems: use branch and bound
+                branch_bound_path(notation, shapes, &cost_model)
+            } else if n <= MAX_BB_TENSORS {
+                // Larger problems: still use branch and bound with pruning
+                branch_bound_path(notation, shapes, &cost_model)
+            } else {
+                // Very large: fall back to greedy
                 greedy_path(notation, shapes, &cost_model)
             }
         }
     };
 
     let output_shape = compute_output_shape(notation, shapes);
-    ExecutionPlan::from_contraction_path(path, output_shape)
+
+    // Extract input indices from notation for the executor
+    let input_indices: Vec<Vec<char>> = notation
+        .inputs()
+        .iter()
+        .map(|s| s.named_indices().collect())
+        .collect();
+
+    ExecutionPlan::from_contraction_path(path, output_shape, input_indices)
 }
 
 /// Computes the output shape from notation and input shapes.
@@ -230,7 +268,7 @@ fn estimate_fast_path_flops(fast_path: &FastPath, shapes: &[&[usize]]) -> u64 {
                 0
             }
         }
-        FastPath::Reduce { axes, .. } => {
+        FastPath::Reduce { .. } => {
             if let Some(shape) = shapes.get(0) {
                 shape.iter().map(|&d| d as u64).product()
             } else {

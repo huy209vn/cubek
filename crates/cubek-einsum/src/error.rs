@@ -1,7 +1,6 @@
 //! Error types for einsum operations.
 
 use alloc::string::String;
-use alloc::vec::Vec;
 
 /// Errors that can occur during einsum parsing and execution.
 #[derive(Debug, Clone)]
@@ -61,6 +60,14 @@ pub enum EinsumError {
     /// Unsupported operation.
     #[cfg_attr(feature = "std", error("unsupported operation: {message}"))]
     Unsupported { message: String },
+
+    /// Memory allocation error.
+    #[cfg_attr(feature = "std", error("memory error: {message}"))]
+    MemoryError { message: String },
+
+    /// Shape computation error.
+    #[cfg_attr(feature = "std", error("shape error: {message}"))]
+    ShapeError { message: String },
 }
 
 impl EinsumError {
@@ -78,6 +85,18 @@ impl EinsumError {
 
     pub fn launch(message: impl Into<String>) -> Self {
         Self::LaunchError {
+            message: message.into(),
+        }
+    }
+
+    pub fn memory(message: impl Into<String>) -> Self {
+        Self::MemoryError {
+            message: message.into(),
+        }
+    }
+
+    pub fn shape(message: impl Into<String>) -> Self {
+        Self::ShapeError {
             message: message.into(),
         }
     }

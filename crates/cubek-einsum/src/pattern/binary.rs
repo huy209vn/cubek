@@ -89,6 +89,7 @@ pub fn is_dot_product(notation: &EinsumNotation) -> bool {
 /// Checks if the notation represents a bilinear form.
 ///
 /// `i,ij,j->` - vector-matrix-vector product.
+#[allow(dead_code)]
 pub fn is_bilinear_form(notation: &EinsumNotation) -> bool {
     if notation.num_inputs() != 3 {
         return false;

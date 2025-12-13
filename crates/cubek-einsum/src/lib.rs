@@ -30,6 +30,7 @@ pub mod error;
 pub mod notation;
 pub mod optimization;
 pub mod pattern;
+pub mod kernels;
 pub mod launch;
 
 pub use error::EinsumError;

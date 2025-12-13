@@ -163,6 +163,7 @@ fn evaluate_pair(
 /// Greedy with size-based tie-breaking.
 ///
 /// When costs are similar, prefer contracting smaller tensors first.
+#[allow(dead_code)]
 pub fn greedy_path_size_tiebreak(
     notation: &EinsumNotation,
     shapes: &[&[usize]],
@@ -176,6 +177,7 @@ pub fn greedy_path_size_tiebreak(
 /// Greedy with FLOP-based ordering (SSGreedy from opt_einsum).
 ///
 /// Considers only FLOP cost, ignoring memory.
+#[allow(dead_code)]
 pub fn greedy_flops_only(
     notation: &EinsumNotation,
     shapes: &[&[usize]],

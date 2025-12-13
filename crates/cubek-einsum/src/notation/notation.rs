@@ -1,5 +1,6 @@
 //! Complete einsum notation representation.
 
+use alloc::vec;
 use alloc::vec::Vec;
 use alloc::collections::BTreeSet;
 use alloc::string::String;
@@ -288,7 +289,7 @@ impl EinsumNotation {
         // Build dimension mapping from indices to sizes
         let mut dim_map: hashbrown::HashMap<char, usize> = hashbrown::HashMap::new();
 
-        for (input_idx, (subscript, shape)) in self.inputs.iter().zip(input_shapes.iter()).enumerate() {
+        for (_input_idx, (subscript, shape)) in self.inputs.iter().zip(input_shapes.iter()).enumerate() {
             let expanded = subscript.expand_ellipsis(
                 &generate_batch_indices(ellipsis_dims)
             );

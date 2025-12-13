@@ -28,8 +28,13 @@ cubek = { path = "../crates/cubek", version = "0.0.1", default-features = false,
     "matmul",
     "convolution",
     "attention",
+    "einsum",
 ] }
 half = { workspace = true }
+
+[[bench]]
+harness = false
+name = "einsum"
 
 [[bench]]
 harness = false

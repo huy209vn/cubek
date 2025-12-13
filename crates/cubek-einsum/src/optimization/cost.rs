@@ -203,7 +203,7 @@ impl CostModel {
     pub fn optimistic_remaining_cost(
         &self,
         shapes: &[Vec<usize>],
-        indices: &[Vec<char>],
+        _indices: &[Vec<char>],
     ) -> ContractionCost {
         if shapes.len() <= 1 {
             return ContractionCost::zero();

@@ -4,6 +4,8 @@
 
 mod config;
 mod executor;
+mod workspace;
 
 pub use config::EinsumConfig;
 pub use executor::einsum;
+pub use workspace::Workspace;
