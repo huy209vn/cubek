@@ -1,12 +1,6 @@
 //! Einsum benchmark suite.
-//!
-//! Benchmarks various einsum operations including:
-//! - Matrix multiplication (fast path)
-//! - Batched matrix multiplication (fast path)
-//! - Tensor chain contractions (multi-step)
-//! - Reductions
-//! - Transposes
-
+//! (Updated: correct FLOP estimator + kernel vs system measurement + warmup)
+use cubecl::profile::ProfileTicks;
 use cubecl::{
     benchmark::{Benchmark, BenchmarkComputations, BenchmarkDurations, TimingMethod},
     future,
@@ -17,6 +11,7 @@ use cubek::{
     einsum::{self, EinsumConfig, ContractionStrategy},
     random::random_uniform,
 };
+use std::time::Duration;
 
 /// Einsum benchmark configuration.
 #[allow(dead_code)]
@@ -54,6 +49,8 @@ impl<R: Runtime> Benchmark for EinsumBench<R> {
         let input_refs: Vec<&TensorHandle<R>> = inputs.iter().collect();
         let config = EinsumConfig {
             strategy: self.strategy,
+            use_tensor_cores: true,
+            autotune: false,
             validate_shapes: false,
         };
 
@@ -99,7 +96,8 @@ fn compute_output_shape(notation: &str, shapes: &[Vec<usize>]) -> Vec<usize> {
     // Parse notation
     let parts: Vec<&str> = notation.split("->").collect();
     if parts.len() != 2 {
-        return vec![1]; // Scalar output for implicit reduction
+        // If no '->' provided, fall back to scalar (our benchmarks always use explicit ->).
+        return vec![1];
     }
 
     let inputs_str = parts[0];
@@ -131,8 +129,110 @@ fn compute_output_shape(notation: &str, shapes: &[Vec<usize>]) -> Vec<usize> {
     }
 }
 
-/// Runs a single einsum benchmark.
-#[allow(dead_code)]
+/// Estimates FLOPs for an einsum operation (correct general formula).
+///
+/// Explanation:
+///  - Let `inputs` be the input subscripts, `output` the output subscripts.
+///  - Let `O` be the product of sizes of output indices.
+///  - Let `S` be the product of sizes of summation (contracted) indices (indices present in inputs but not in output).
+///  - Let `A` be the number of input tensors.
+///
+/// For each output element we compute `product_S` summands; each summand requires `(A - 1)` multiplies
+/// (to multiply A inputs together), and summing across the `product_S` summands uses `product_S - 1` adds.
+/// Therefore:
+///   multiplies = (A - 1) * (O * S)
+///   adds       = if S > 0 { (S - 1) * O } else { 0 }
+///   flops      = multiplies + adds
+fn estimate_flops(notation: &str, shapes: &[Vec<usize>]) -> u64 {
+    use std::collections::HashMap;
+
+    let parts: Vec<&str> = notation.split("->").collect();
+    let inputs_str = parts[0];
+    let output_str = if parts.len() == 2 { parts[1] } else { "" };
+
+    // Build dimension map (same as compute_output_shape)
+    let mut dim_map: HashMap<char, usize> = HashMap::new();
+    let input_subscripts: Vec<&str> = inputs_str.split(',').collect();
+
+    for (i, subscript) in input_subscripts.iter().enumerate() {
+        if i >= shapes.len() {
+            break;
+        }
+        for (j, c) in subscript.chars().enumerate() {
+            if j < shapes[i].len() && c.is_alphabetic() {
+                dim_map.insert(c, shapes[i][j]);
+            }
+        }
+    }
+
+    // Collect all indices appearing in inputs
+    let mut all_indices = Vec::new();
+    for sub in &input_subscripts {
+        for c in sub.chars().filter(|c| c.is_alphabetic()) {
+            if !all_indices.contains(&c) {
+                all_indices.push(c);
+            }
+        }
+    }
+
+    // Output indices set
+    let output_indices: Vec<char> = output_str.chars().filter(|c| c.is_alphabetic()).collect();
+
+    // Summation indices = all_indices \ output_indices
+    let summation_indices: Vec<char> = all_indices
+        .iter()
+        .copied()
+        .filter(|c| !output_indices.contains(c))
+        .collect();
+
+    // Compute products (use u128 to avoid overflow for large dims)
+    let mut product_o: u128 = 1;
+    for c in &output_indices {
+        if let Some(&d) = dim_map.get(c) {
+            product_o = product_o.saturating_mul(d as u128);
+        } else {
+            // missing dim info -> assume 1
+            product_o = product_o.saturating_mul(1);
+        }
+    }
+
+    let mut product_s: u128 = 1;
+    for c in &summation_indices {
+        if let Some(&d) = dim_map.get(c) {
+            product_s = product_s.saturating_mul(d as u128);
+        } else {
+            product_s = product_s.saturating_mul(1);
+        }
+    }
+
+    let num_inputs = input_subscripts.len() as u128;
+    let product_all = product_o.saturating_mul(product_s);
+
+    // multiplies
+    let multiplies = if num_inputs >= 1 {
+        (num_inputs - 1).saturating_mul(product_all)
+    } else {
+        0u128
+    };
+
+    // adds
+    let adds = if product_s > 0 {
+        product_o.saturating_mul(product_s.saturating_sub(1))
+    } else {
+        0u128
+    };
+
+    let flops = multiplies.saturating_add(adds);
+
+    // clamp to u64 (if unrealistic dimensions overflow, cap at u64::MAX)
+    if flops > u64::MAX as u128 {
+        u64::MAX
+    } else {
+        flops as u64
+    }
+}
+
+/// Runs a single einsum benchmark and reports both kernel TFLOPS and system timing.
 fn run_one<R: Runtime>(
     device: R::Device,
     notation: &'static str,
@@ -152,50 +252,43 @@ fn run_one<R: Runtime>(
     println!("Einsum: {} with shapes {:?}", notation, shapes);
     println!("{}", bench.name());
 
+    // -------------------------
+    // Warmup
+    // -------------------------
+    let warm_args = bench.prepare();
+    bench.execute(warm_args);
+    bench.sync();
+
+    // -------------------------
+    // Kernel profiling
+    // -------------------------
+    let profile_args = bench.prepare();
+    let profile_duration = bench.profile(profile_args.clone());
+
+
+let profile_duration = bench.profile(profile_args)
+    .map_err(|e| format!("profiling failed: {:?}", e))?;
+
+let ticks = future::block_on(profile_duration.resolve());
+let kernel_secs = ticks.duration().as_secs_f64();
+
+    // -------------------------
+    // System timing
+    // -------------------------
     match bench.run(TimingMethod::System) {
         Ok(val) => {
             let flops = estimate_flops(notation, &shapes);
-            let computed = BenchmarkComputations::new(&val);
-            let tflops = flops as f64 / (computed.median.as_secs_f64() * 1e12);
-            println!("TFLOPS: {:.3}", tflops);
-            println!("Times: {val}");
+            let secs = kernel_secs.max(1e-12);
+            let tflops = flops as f64 / (secs * 1e12);
+
+            println!("TFLOPS (kernel): {:.3}", tflops);
+            println!("Times (system): {val}");
+
             Ok((val, tflops))
         }
-        Err(err) => {
-            println!("Error: {err:?}");
-            Err(err)
-        }
+        Err(err) => Err(format!("{err:?}")),
     }
 }
-
-/// Estimates FLOPs for an einsum operation.
-fn estimate_flops(notation: &str, shapes: &[Vec<usize>]) -> u64 {
-    use std::collections::HashMap;
-
-    let parts: Vec<&str> = notation.split("->").collect();
-    let inputs_str = parts[0];
-
-    // Build dimension map
-    let mut dim_map: HashMap<char, usize> = HashMap::new();
-    let input_subscripts: Vec<&str> = inputs_str.split(',').collect();
-
-    for (i, subscript) in input_subscripts.iter().enumerate() {
-        if i >= shapes.len() {
-            break;
-        }
-        for (j, c) in subscript.chars().enumerate() {
-            if j < shapes[i].len() && c.is_alphabetic() {
-                dim_map.insert(c, shapes[i][j]);
-            }
-        }
-    }
-
-    // FLOPs = 2 * product of all dimensions (for multiply-add)
-    let total_size: u64 = dim_map.values().map(|&d| d as u64).product();
-    2 * total_size
-}
-
-/// Benchmark matmul via einsum (should use fast path).
 #[allow(unused)]
 fn bench_matmul<R: Runtime>(device: R::Device) {
     println!("\n=== Matrix Multiplication (Fast Path) ===");
@@ -209,7 +302,6 @@ fn bench_matmul<R: Runtime>(device: R::Device) {
     }
 }
 
-/// Benchmark batched matmul via einsum.
 #[allow(unused)]
 fn bench_batched_matmul<R: Runtime>(device: R::Device) {
     println!("\n=== Batched Matrix Multiplication (Fast Path) ===");
@@ -223,7 +315,6 @@ fn bench_batched_matmul<R: Runtime>(device: R::Device) {
     }
 }
 
-/// Benchmark tensor chain contraction.
 #[allow(unused)]
 fn bench_chain_contraction<R: Runtime>(device: R::Device) {
     println!("\n=== Chain Contraction (Multi-Step) ===");
@@ -252,7 +343,6 @@ fn bench_chain_contraction<R: Runtime>(device: R::Device) {
     );
 }
 
-/// Benchmark reduction operations.
 #[allow(unused)]
 fn bench_reductions<R: Runtime>(device: R::Device) {
     println!("\n=== Reductions (Fast Path) ===");
@@ -282,7 +372,6 @@ fn bench_reductions<R: Runtime>(device: R::Device) {
     );
 }
 
-/// Benchmark element-wise operations.
 #[allow(unused)]
 fn bench_elementwise<R: Runtime>(device: R::Device) {
     println!("\n=== Element-wise Operations ===");
@@ -312,7 +401,6 @@ fn bench_elementwise<R: Runtime>(device: R::Device) {
     );
 }
 
-/// Benchmark attention-like patterns.
 #[allow(unused)]
 fn bench_attention_pattern<R: Runtime>(device: R::Device) {
     println!("\n=== Attention Patterns ===");
@@ -334,7 +422,6 @@ fn bench_attention_pattern<R: Runtime>(device: R::Device) {
     );
 }
 
-/// Run all einsum benchmarks.
 #[allow(unused)]
 fn run_all_benches<R: Runtime>() {
     let device = R::Device::default();

@@ -224,6 +224,10 @@ fn execute_matmul<R: Runtime, E: CubePrimitive + Numeric>(
 }
 
 /// Executes reduction via cubek-reduce.
+///
+/// Note: cubek_reduce expects output to keep reduced dimension with size 1,
+/// but einsum semantics remove the dimension entirely. We handle this by
+/// creating an intermediate tensor if needed.
 fn execute_reduce<R: Runtime, E: CubePrimitive + Numeric>(
     client: &ComputeClient<R>,
     inputs: &[&TensorHandle<R>],
@@ -243,7 +247,6 @@ fn execute_reduce<R: Runtime, E: CubePrimitive + Numeric>(
 
     if axes.is_empty() {
         // No reduction needed, just copy
-        // For now, return error - this shouldn't happen in valid einsum
         return Err(EinsumError::unsupported("empty reduction axes"));
     }
 
@@ -254,19 +257,53 @@ fn execute_reduce<R: Runtime, E: CubePrimitive + Numeric>(
     let elem_type = E::as_type_native_unchecked().elem_type();
     let dtypes = operation.precision(elem_type);
 
-    // Launch reduce
-    cubek_reduce::reduce(
-        client,
-        input.as_ref(),
-        output.as_ref(),
-        axis,
-        None, // Auto strategy
-        operation,
-        dtypes,
-    ).map_err(|e| EinsumError::launch(alloc::format!("reduce failed: {:?}", e)))
+    // cubek_reduce expects output shape to keep reduced dim with size 1
+    // e.g., input [1024, 1024] reduced on axis 1 -> output [1024, 1]
+    // But einsum expects [1024] (dim removed). Create intermediate if needed.
+    let mut keep_dim_shape = input.shape.clone();
+    keep_dim_shape[axis] = 1;
+
+    let output_matches_keepdim = output.shape == keep_dim_shape;
+
+    if output_matches_keepdim {
+        // Output already has keep-dim shape, reduce directly
+        cubek_reduce::reduce(
+            client,
+            input.as_ref(),
+            output.as_ref(),
+            axis,
+            None,
+            operation,
+            dtypes,
+        ).map_err(|e| EinsumError::launch(alloc::format!("reduce failed: {:?}", e)))
+    } else {
+        // Create intermediate with keep-dim shape, then copy/reshape to output
+        let intermediate = TensorHandle::zeros(client, keep_dim_shape.clone(), input.dtype);
+
+        cubek_reduce::reduce(
+            client,
+            input.as_ref(),
+            intermediate.as_ref(),
+            axis,
+            None,
+            operation,
+            dtypes,
+        ).map_err(|e| EinsumError::launch(alloc::format!("reduce failed: {:?}", e)))?;
+
+        // The intermediate and output have the same number of elements,
+        // just different shapes. We can treat them as the same memory.
+        // Update output to point to intermediate's data with squeezed shape.
+        output.handle = intermediate.handle;
+        output.strides = compute_strides(&output.shape);
+
+        Ok(())
+    }
 }
 
 /// Executes multi-axis reduction by reducing one axis at a time.
+///
+/// Note: cubek_reduce keeps reduced dimensions as size 1, so we need to
+/// handle shape differences between intermediate and final output.
 fn execute_multi_axis_reduce<R: Runtime, E: CubePrimitive + Numeric>(
     client: &ComputeClient<R>,
     input: &TensorHandle<R>,
@@ -287,32 +324,44 @@ fn execute_multi_axis_reduce<R: Runtime, E: CubePrimitive + Numeric>(
     for (i, &axis) in sorted_axes.iter().enumerate() {
         let is_last = i == sorted_axes.len() - 1;
 
-        // Compute output shape for this reduction (remove the axis)
-        let mut reduced_shape: Vec<usize> = current.shape.iter()
-            .enumerate()
-            .filter(|&(idx, _)| idx != axis)
-            .map(|(_, &d)| d)
-            .collect();
-
-        // Handle scalar output case
-        if reduced_shape.is_empty() {
-            reduced_shape.push(1);
-        }
+        // cubek_reduce expects keep-dim shape (dim becomes 1, not removed)
+        let mut keep_dim_shape = current.shape.clone();
+        keep_dim_shape[axis] = 1;
 
         if is_last {
-            // Final reduction - write to output
-            cubek_reduce::reduce(
-                client,
-                current.as_ref(),
-                output.as_ref(),
-                axis,
-                None,
-                operation,
-                dtypes,
-            ).map_err(|e| EinsumError::launch(alloc::format!("reduce failed: {:?}", e)))?;
+            // Final reduction - check if output shape matches keep-dim
+            if output.shape == keep_dim_shape {
+                // Direct reduction to output
+                cubek_reduce::reduce(
+                    client,
+                    current.as_ref(),
+                    output.as_ref(),
+                    axis,
+                    None,
+                    operation,
+                    dtypes,
+                ).map_err(|e| EinsumError::launch(alloc::format!("reduce failed: {:?}", e)))?;
+            } else {
+                // Need intermediate, then copy to squeezed output
+                let intermediate = TensorHandle::zeros(client, keep_dim_shape.clone(), dtype);
+
+                cubek_reduce::reduce(
+                    client,
+                    current.as_ref(),
+                    intermediate.as_ref(),
+                    axis,
+                    None,
+                    operation,
+                    dtypes,
+                ).map_err(|e| EinsumError::launch(alloc::format!("reduce failed: {:?}", e)))?;
+
+                // Copy handle to output (same data, different shape interpretation)
+                output.handle = intermediate.handle;
+                output.strides = compute_strides(&output.shape);
+            }
         } else {
-            // Intermediate reduction - allocate workspace
-            let workspace = TensorHandle::zeros(client, reduced_shape.clone(), dtype);
+            // Intermediate reduction - use keep-dim shape
+            let workspace = TensorHandle::zeros(client, keep_dim_shape.clone(), dtype);
 
             cubek_reduce::reduce(
                 client,
