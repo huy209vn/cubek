@@ -427,6 +427,104 @@ fn execute_hadamard<R: Runtime, E: CubePrimitive + Numeric>(
     kernels::launch_hadamard::<R, E>(client, inputs[0], inputs[1], output)
 }
 
+/// Executes broadcast multiply when no indices are contracted.
+///
+/// Handles patterns like `ij,j->ij` where one tensor broadcasts over the other.
+/// This is NOT a matmul - it's element-wise multiplication with broadcasting.
+fn execute_broadcast_multiply<R: Runtime, E: CubePrimitive + Numeric>(
+    client: &ComputeClient<R>,
+    lhs: &TensorHandle<R>,
+    rhs: &TensorHandle<R>,
+    output: &mut TensorHandle<R>,
+    lhs_indices: &[char],
+    rhs_indices: &[char],
+) -> EinsumResult<()> {
+    // For broadcast multiply, we need to expand tensors to match the output shape
+    // and then do element-wise multiplication with proper stride handling.
+    //
+    // Example: ij,j->ij with shapes [512, 1024], [1024] -> [512, 1024]
+    // The vector needs to be broadcast across the first dimension (stride=0 for that dim).
+
+    let lhs_rank = lhs_indices.len();
+    let rhs_rank = rhs_indices.len();
+
+    // If shapes already match (same indices in same order), use Hadamard directly
+    // (contiguous case, no broadcasting needed)
+    if lhs_indices == rhs_indices && lhs.shape == rhs.shape {
+        return kernels::launch_hadamard::<R, E>(client, lhs, rhs, output);
+    }
+
+    // For broadcast cases, we expand both tensors to match output shape/indices.
+    // The output indices should be the union, preserving order from the larger tensor.
+
+    // Determine output indices (union of both, preserving order)
+    let output_indices: Vec<char> = if lhs_rank >= rhs_rank {
+        lhs_indices.to_vec()
+    } else {
+        rhs_indices.to_vec()
+    };
+    let output_rank = output_indices.len();
+
+    // Simple case: one tensor's indices are a subset of the other's
+    // Example: ij,j->ij means rhs broadcasts over i
+    if rhs_rank < lhs_rank && rhs_indices.iter().all(|c| lhs_indices.contains(c)) {
+        // rhs broadcasts to match lhs (output)
+        let mut rhs_broadcast = rhs.clone();
+
+        // Expand rhs to match output shape with stride 0 for broadcast dims
+        let mut new_shape = Vec::with_capacity(output_rank);
+        let mut new_strides = Vec::with_capacity(output_rank);
+
+        for (i, &idx) in lhs_indices.iter().enumerate() {
+            if let Some(pos) = rhs_indices.iter().position(|&c| c == idx) {
+                // This dimension exists in rhs
+                new_shape.push(rhs.shape[pos]);
+                new_strides.push(rhs.strides[pos]);
+            } else {
+                // Broadcast dimension - size from lhs/output, stride 0
+                new_shape.push(lhs.shape[i]);
+                new_strides.push(0);
+            }
+        }
+
+        rhs_broadcast.shape = new_shape;
+        rhs_broadcast.strides = new_strides;
+
+        // Use the broadcast-aware kernel (handles strided tensors)
+        return kernels::launch_broadcast_multiply::<R, E>(client, lhs, &rhs_broadcast, output);
+    }
+
+    // Symmetric case: lhs broadcasts to match rhs (output)
+    if lhs_rank < rhs_rank && lhs_indices.iter().all(|c| rhs_indices.contains(c)) {
+        let mut lhs_broadcast = lhs.clone();
+
+        let mut new_shape = Vec::with_capacity(output_rank);
+        let mut new_strides = Vec::with_capacity(output_rank);
+
+        for (i, &idx) in rhs_indices.iter().enumerate() {
+            if let Some(pos) = lhs_indices.iter().position(|&c| c == idx) {
+                new_shape.push(lhs.shape[pos]);
+                new_strides.push(lhs.strides[pos]);
+            } else {
+                new_shape.push(rhs.shape[i]);
+                new_strides.push(0);
+            }
+        }
+
+        lhs_broadcast.shape = new_shape;
+        lhs_broadcast.strides = new_strides;
+
+        // Use the broadcast-aware kernel (handles strided tensors)
+        return kernels::launch_broadcast_multiply::<R, E>(client, &lhs_broadcast, rhs, output);
+    }
+
+    // Complex broadcast case - not yet supported
+    Err(EinsumError::unsupported(alloc::format!(
+        "complex broadcast multiply not yet supported: {:?} x {:?}",
+        lhs_indices, rhs_indices
+    )))
+}
+
 /// Executes outer product.
 fn execute_outer_product<R: Runtime, E: CubePrimitive + Numeric>(
     client: &ComputeClient<R>,
@@ -677,12 +775,17 @@ fn compute_contraction_shape_with_indices<R: Runtime>(
 
 /// Executes a general two-tensor contraction with explicit index tracking.
 ///
-/// Uses the TTGT (Transpose-Transpose-GEMM-Transpose) approach:
-/// 1. Permute LHS so non-contracted indices come first, contracted indices last
-/// 2. Permute RHS so contracted indices come first, non-contracted indices last
-/// 3. Reshape LHS to (M, K), RHS to (K, N)
-/// 4. Perform GEMM
-/// 5. Reshape output to final shape
+/// Uses an optimized batched GEMM approach:
+/// 1. Identify batch dimensions (indices in both LHS and RHS, not contracted)
+/// 2. Permute tensors to [batch..., non-contracted..., contracted...] layout
+/// 3. Reshape preserving batch structure: [batch..., M, K] and [batch..., K, N]
+/// 4. Perform batched GEMM (cubek-matmul handles batches efficiently)
+/// 5. Output already has correct shape from permutation
+///
+/// This is superior to flattening batch dims into M, as it:
+/// - Preserves cache locality (batch as outer loop)
+/// - Enables efficient batched kernel dispatch
+/// - Handles strided tensors correctly
 fn execute_general_contraction_with_indices<R: Runtime, E: CubePrimitive + Numeric>(
     client: &ComputeClient<R>,
     lhs: &TensorHandle<R>,
@@ -693,6 +796,12 @@ fn execute_general_contraction_with_indices<R: Runtime, E: CubePrimitive + Numer
     contracted: &[char],
 ) -> EinsumResult<()> {
     use hashbrown::{HashMap, HashSet};
+
+    // If no indices are contracted, this is a broadcast multiply, not a matmul
+    // Fall back to element-wise kernel with broadcasting
+    if contracted.is_empty() {
+        return execute_broadcast_multiply::<R, E>(client, lhs, rhs, output, lhs_indices, rhs_indices);
+    }
 
     // Build dimension map from index char to size
     let mut dim_map: HashMap<char, usize> = HashMap::new();
@@ -705,11 +814,26 @@ fn execute_general_contraction_with_indices<R: Runtime, E: CubePrimitive + Numer
 
     let contracted_set: HashSet<char> = contracted.iter().copied().collect();
 
-    // For LHS: we want [non-contracted..., contracted...] order
-    // Find which dimensions are non-contracted and which are contracted
-    let lhs_non_contracted: Vec<usize> = lhs_indices.iter()
+    // Identify batch dimensions: indices that appear in both LHS and RHS but are not contracted
+    let lhs_set: HashSet<char> = lhs_indices.iter().copied().collect();
+    let rhs_set: HashSet<char> = rhs_indices.iter().copied().collect();
+    let common_indices: HashSet<char> = lhs_set.intersection(&rhs_set).copied().collect();
+    let batch_indices: Vec<char> = common_indices
+        .difference(&contracted_set)
+        .copied()
+        .collect();
+    let batch_set: HashSet<char> = batch_indices.iter().copied().collect();
+
+    // For LHS: separate batch, non-contracted (M), and contracted (K) dimensions
+    // We want order: [batch..., M..., K...]
+    let lhs_batch: Vec<usize> = lhs_indices.iter()
         .enumerate()
-        .filter(|(_, c)| !contracted_set.contains(*c))
+        .filter(|(_, c)| batch_set.contains(*c))
+        .map(|(i, _)| i)
+        .collect();
+    let lhs_m: Vec<usize> = lhs_indices.iter()
+        .enumerate()
+        .filter(|(_, c)| !contracted_set.contains(*c) && !batch_set.contains(*c))
         .map(|(i, _)| i)
         .collect();
     let lhs_contracted: Vec<usize> = lhs_indices.iter()
@@ -718,20 +842,46 @@ fn execute_general_contraction_with_indices<R: Runtime, E: CubePrimitive + Numer
         .map(|(i, _)| i)
         .collect();
 
-    // For RHS: we want [contracted..., non-contracted...] order
-    let rhs_contracted: Vec<usize> = rhs_indices.iter()
+    // For RHS: separate batch, contracted (K), and non-contracted (N) dimensions
+    // We want order: [batch..., K..., N...]
+    let rhs_batch: Vec<usize> = rhs_indices.iter()
         .enumerate()
-        .filter(|(_, c)| contracted_set.contains(*c))
-        .map(|(i, _)| i)
-        .collect();
-    let rhs_non_contracted: Vec<usize> = rhs_indices.iter()
-        .enumerate()
-        .filter(|(_, c)| !contracted_set.contains(*c))
+        .filter(|(_, c)| batch_set.contains(*c))
         .map(|(i, _)| i)
         .collect();
 
-    // Compute M, K, N
-    let m: usize = lhs_non_contracted.iter()
+    // CRITICAL: RHS contracted dimensions must be in the same ORDER as LHS contracted
+    // dimensions for the merged K dimension to match. We build a map from contracted
+    // index char to position in RHS, then order by LHS contracted order.
+    let rhs_contracted_map: HashMap<char, usize> = rhs_indices.iter()
+        .enumerate()
+        .filter(|(_, c)| contracted_set.contains(*c))
+        .map(|(i, &c)| (c, i))
+        .collect();
+
+    // Get contracted chars in the order they appear in LHS
+    let lhs_contracted_chars: Vec<char> = lhs_indices.iter()
+        .filter(|c| contracted_set.contains(*c))
+        .copied()
+        .collect();
+
+    // Order RHS contracted positions to match LHS contracted order
+    let rhs_contracted: Vec<usize> = lhs_contracted_chars.iter()
+        .filter_map(|c| rhs_contracted_map.get(c).copied())
+        .collect();
+
+    let rhs_n: Vec<usize> = rhs_indices.iter()
+        .enumerate()
+        .filter(|(_, c)| !contracted_set.contains(*c) && !batch_set.contains(*c))
+        .map(|(i, _)| i)
+        .collect();
+
+    // Compute batch dimensions, M, K, N
+    let batch_shape: Vec<usize> = batch_indices.iter()
+        .map(|c| dim_map[c])
+        .collect();
+
+    let m: usize = lhs_m.iter()
         .map(|&i| lhs.shape[i])
         .product::<usize>()
         .max(1);
@@ -739,20 +889,22 @@ fn execute_general_contraction_with_indices<R: Runtime, E: CubePrimitive + Numer
         .map(|&i| lhs.shape[i])
         .product::<usize>()
         .max(1);
-    let n: usize = rhs_non_contracted.iter()
+    let n: usize = rhs_n.iter()
         .map(|&i| rhs.shape[i])
         .product::<usize>()
         .max(1);
 
-    // Build permutation for LHS: [non_contracted..., contracted...]
-    let lhs_perm: Vec<usize> = lhs_non_contracted.iter()
+    // Build permutation for LHS: [batch..., M..., K...]
+    let lhs_perm: Vec<usize> = lhs_batch.iter()
+        .chain(lhs_m.iter())
         .chain(lhs_contracted.iter())
         .copied()
         .collect();
 
-    // Build permutation for RHS: [contracted..., non_contracted...]
-    let rhs_perm: Vec<usize> = rhs_contracted.iter()
-        .chain(rhs_non_contracted.iter())
+    // Build permutation for RHS: [batch..., K..., N...]
+    let rhs_perm: Vec<usize> = rhs_batch.iter()
+        .chain(rhs_contracted.iter())
+        .chain(rhs_n.iter())
         .copied()
         .collect();
 
@@ -760,81 +912,137 @@ fn execute_general_contraction_with_indices<R: Runtime, E: CubePrimitive + Numer
     let lhs_needs_transpose = !is_identity_permutation(&lhs_perm);
     let rhs_needs_transpose = !is_identity_permutation(&rhs_perm);
 
-    // Apply permutations via stride manipulation (zero-copy transpose)
-    let lhs_permuted = if lhs_needs_transpose {
+    // Determine target shapes for matmul
+    let lhs_target_shape = if !batch_shape.is_empty() {
+        [batch_shape.clone(), vec![m, k]].concat()
+    } else {
+        vec![m, k]
+    };
+    let rhs_target_shape = if !batch_shape.is_empty() {
+        [batch_shape.clone(), vec![k, n]].concat()
+    } else {
+        vec![k, n]
+    };
+
+    // Check if reshape is needed (merging multiple dimensions)
+    let lhs_needs_reshape = lhs_perm.len() != lhs_target_shape.len();
+    let rhs_needs_reshape = rhs_perm.len() != rhs_target_shape.len();
+
+    // For permute+reshape, we need to materialize the permuted tensor
+    // because reshape requires contiguous data in the permuted order
+    let lhs_reshaped = if lhs_needs_transpose && lhs_needs_reshape {
+        // Need to materialize: copy data in permuted order, then reshape
+        let permuted_shape: Vec<usize> = lhs_perm.iter().map(|&i| lhs.shape[i]).collect();
+        let permuted_strides: Vec<usize> = lhs_perm.iter().map(|&i| lhs.strides[i]).collect();
+
+        // Create permuted view
+        let mut permuted = lhs.clone();
+        permuted.shape = permuted_shape;
+        permuted.strides = permuted_strides;
+
+        // Materialize into contiguous tensor with target shape
+        let mut materialized = TensorHandle::empty(client, lhs_target_shape.clone(), lhs.dtype);
+        kernels::copy_reshape::<R, E>(client, &permuted, &mut materialized)?;
+        materialized
+    } else if lhs_needs_transpose {
+        // Just permute (no reshape) - can do zero-copy
         let new_shape: Vec<usize> = lhs_perm.iter().map(|&i| lhs.shape[i]).collect();
         let new_strides: Vec<usize> = lhs_perm.iter().map(|&i| lhs.strides[i]).collect();
         let mut t = lhs.clone();
         t.shape = new_shape;
         t.strides = new_strides;
         t
+    } else if lhs_needs_reshape {
+        // Just reshape (no permute) - can change shape directly
+        let mut t = lhs.clone();
+        t.shape = lhs_target_shape.clone();
+        t.strides = compute_strides(&t.shape);
+        t
     } else {
         lhs.clone()
     };
 
-    let rhs_permuted = if rhs_needs_transpose {
+    let rhs_reshaped = if rhs_needs_transpose && rhs_needs_reshape {
+        // Need to materialize: copy data in permuted order, then reshape
+        let permuted_shape: Vec<usize> = rhs_perm.iter().map(|&i| rhs.shape[i]).collect();
+        let permuted_strides: Vec<usize> = rhs_perm.iter().map(|&i| rhs.strides[i]).collect();
+
+        // Create permuted view
+        let mut permuted = rhs.clone();
+        permuted.shape = permuted_shape;
+        permuted.strides = permuted_strides;
+
+        // Materialize into contiguous tensor with target shape
+        let mut materialized = TensorHandle::empty(client, rhs_target_shape.clone(), rhs.dtype);
+        kernels::copy_reshape::<R, E>(client, &permuted, &mut materialized)?;
+        materialized
+    } else if rhs_needs_transpose {
+        // Just permute (no reshape) - can do zero-copy
         let new_shape: Vec<usize> = rhs_perm.iter().map(|&i| rhs.shape[i]).collect();
         let new_strides: Vec<usize> = rhs_perm.iter().map(|&i| rhs.strides[i]).collect();
         let mut t = rhs.clone();
         t.shape = new_shape;
         t.strides = new_strides;
         t
+    } else if rhs_needs_reshape {
+        // Just reshape (no permute) - can change shape directly
+        let mut t = rhs.clone();
+        t.shape = rhs_target_shape.clone();
+        t.strides = compute_strides(&t.shape);
+        t
     } else {
         rhs.clone()
     };
 
-    // Now reshape to 2D for GEMM
-    // LHS: (M, K) - first dims are M, last dims are K
-    let mut lhs_2d = lhs_permuted.clone();
-    lhs_2d.shape = vec![m, k];
-    // Keep original strides if contiguous, otherwise need to recompute
-    // For non-contiguous case, matmul should handle strided inputs
-    if is_contiguous(&lhs_permuted) {
-        lhs_2d.strides = compute_strides(&lhs_2d.shape);
-    } else {
-        // Keep the permuted strides but collapse dimensions
-        // This is tricky - for now, trust matmul to handle it
-        lhs_2d.strides = vec![k, 1];
+    // Ensure output has at least 2 dimensions for matmul
+    // If output is 1D (happens with some contraction patterns), reshape to 2D
+    let mut output_for_matmul = output.clone();
+    let original_output_shape = output.shape.clone();
+    let needs_reshape = output.shape.len() < 2;
+
+    if needs_reshape {
+        // Reshape output to 2D by adding dimensions of size 1
+        if !batch_shape.is_empty() {
+            // Batched case: [batch..., M, N] where M or N might be 1
+            let _total_elements: usize = output.shape.iter().product();
+            let _batch_size: usize = batch_shape.iter().product();
+            output_for_matmul.shape = [batch_shape.clone(), vec![m.max(1), n.max(1)]].concat();
+        } else {
+            // Non-batched case: reshape to [m, n]
+            output_for_matmul.shape = vec![m, n];
+        }
+        output_for_matmul.strides = compute_strides(&output_for_matmul.shape);
     }
 
-    // RHS: (K, N) - first dims are K, last dims are N
-    let mut rhs_2d = rhs_permuted.clone();
-    rhs_2d.shape = vec![k, n];
-    if is_contiguous(&rhs_permuted) {
-        rhs_2d.strides = compute_strides(&rhs_2d.shape);
-    } else {
-        rhs_2d.strides = vec![n, 1];
-    }
-
-    // Perform GEMM: (M, K) @ (K, N) -> (M, N)
+    // Perform batched GEMM: [batch..., M, K] @ [batch..., K, N] -> [batch..., M, N]
+    // The cubek-matmul library will automatically detect and handle batch dimensions
     let elem_type = MatmulElemType::new(E::as_type_native_unchecked(), false);
     let dtypes = MatmulElems::from_single_dtype(elem_type);
 
-    let lhs_handle = MatmulInputHandle::Normal(lhs_2d);
-    let rhs_handle = MatmulInputHandle::Normal(rhs_2d);
+    let lhs_handle = MatmulInputHandle::Normal(lhs_reshaped);
+    let rhs_handle = MatmulInputHandle::Normal(rhs_reshaped);
 
     cubek_matmul::launch(
         &MatmulStrategy::Auto,
         client,
         lhs_handle,
         rhs_handle,
-        output.clone(),
+        output_for_matmul,
         dtypes,
-    ).map_err(|e| EinsumError::launch(alloc::format!("contraction failed: {:?}", e)))
+    ).map_err(|e| EinsumError::launch(alloc::format!("contraction failed: {:?}", e)))?;
+
+    // Restore original shape if we reshaped
+    if needs_reshape {
+        output.shape = original_output_shape;
+        output.strides = compute_strides(&output.shape);
+    }
+
+    Ok(())
 }
 
 /// Checks if a permutation is the identity (no reordering needed).
 fn is_identity_permutation(perm: &[usize]) -> bool {
     perm.iter().enumerate().all(|(i, &p)| i == p)
-}
-
-/// Checks if a tensor is contiguous in memory.
-fn is_contiguous<R: Runtime>(tensor: &TensorHandle<R>) -> bool {
-    if tensor.shape.is_empty() {
-        return true;
-    }
-    let expected_strides = compute_strides(&tensor.shape);
-    tensor.strides == expected_strides
 }
 
 #[cfg(test)]

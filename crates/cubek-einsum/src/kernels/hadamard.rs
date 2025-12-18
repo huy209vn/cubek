@@ -1,7 +1,6 @@
 //! Hadamard (element-wise) product kernel.
 //!
 //! Computes C = A ⊙ B (element-wise multiplication).
-//! Optimized with vectorized loads (4 elements per thread) for high memory bandwidth.
 
 use cubecl::prelude::*;
 use cubecl::Runtime;
@@ -12,9 +11,6 @@ use crate::error::{EinsumError, EinsumResult};
 
 /// Block size for hadamard product.
 const BLOCK_SIZE: u32 = 256;
-
-/// Elements processed per thread for better memory throughput.
-const ELEMENTS_PER_THREAD: u32 = 4;
 
 /// Launches the hadamard (element-wise) product kernel.
 ///
@@ -39,16 +35,15 @@ pub fn launch_hadamard<R: Runtime, E: CubePrimitive + Numeric>(
         return Ok(());
     }
 
-    // Calculate launch config with vectorized processing
-    let elements_per_block = BLOCK_SIZE * ELEMENTS_PER_THREAD;
-    let num_cubes = ((num_elements as u32) + elements_per_block - 1) / elements_per_block;
+    // Simple launch config - let CubeCL handle vectorization implicitly
+    let num_cubes = ((num_elements as u32) + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
     let cube_dim = CubeDim::new(BLOCK_SIZE, 1, 1);
     let cube_count = CubeCount::Static(num_cubes, 1, 1);
 
-    // Launch vectorized kernel
+    // Launch kernel
     unsafe {
-        hadamard_kernel_vectorized::launch_unchecked::<R>(
+        hadamard_kernel::launch_unchecked::<R>(
             client,
             cube_count,
             cube_dim,
@@ -61,32 +56,24 @@ pub fn launch_hadamard<R: Runtime, E: CubePrimitive + Numeric>(
     }
 }
 
-/// Vectorized hadamard kernel - each thread processes 4 elements.
+/// Hadamard kernel using CubeCL's ABSOLUTE_POS for optimal coalescing.
+///
+/// This pattern allows the compiler to prove memory access is coalesced across all backends:
+/// - CUDA: Hardware warp coalescing
+/// - WGPU/Vulkan: SPIR-V compiler can prove sequential access
+/// - CubeCL handles vectorization implicitly via Line<E>
 #[cube(launch_unchecked)]
-fn hadamard_kernel_vectorized<E: Numeric>(
+fn hadamard_kernel<E: Numeric>(
     lhs: &Tensor<Line<E>>,
     rhs: &Tensor<Line<E>>,
     output: &mut Tensor<Line<E>>,
     num_elements: u32,
     #[define(E)] _dtype: StorageType,
 ) {
-    let tid = UNIT_POS_X;
-    let block_id = CUBE_POS_X;
-    let block_size = CUBE_DIM_X;
-
-    // Each block processes BLOCK_SIZE * 4 elements
-    let block_start = block_id * block_size * 4;
-    let thread_start = block_start + tid;
-
-    // Process 4 elements per thread with stride for coalesced access
-    #[unroll]
-    for i in 0..4u32 {
-        let idx = thread_start + i * block_size;
-        if idx < num_elements {
-            let a = lhs[idx];
-            let b = rhs[idx];
-            output[idx] = a * b;
-        }
+    // ABSOLUTE_POS = CUBE_POS * CUBE_DIM + UNIT_POS
+    // Compiler can prove this gives coalesced access
+    if ABSOLUTE_POS < num_elements {
+        output[ABSOLUTE_POS] = lhs[ABSOLUTE_POS] * rhs[ABSOLUTE_POS];
     }
 }
 

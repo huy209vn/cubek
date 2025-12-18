@@ -1,8 +1,11 @@
 //! Einsum benchmark suite.
-//! (Updated: correct FLOP estimator + kernel vs system measurement + warmup)
-use cubecl::profile::ProfileTicks;
+//!
+//! Tests both f32 and f16 (tensor core) performance across diverse patterns:
+//! - Standard matmul/batch matmul (fast path)
+//! - Tensor contractions (3D+)
+//! - Novel patterns (bilinear forms, metric tensors, etc.)
 use cubecl::{
-    benchmark::{Benchmark, BenchmarkComputations, BenchmarkDurations, TimingMethod},
+    benchmark::{Benchmark, BenchmarkDurations, TimingMethod},
     future,
     prelude::*,
     std::tensor::TensorHandle,
@@ -11,29 +14,31 @@ use cubek::{
     einsum::{self, EinsumConfig, ContractionStrategy},
     random::random_uniform,
 };
-use std::time::Duration;
+use half::f16;
 
-/// Einsum benchmark configuration.
+/// Einsum benchmark with generic element type.
 #[allow(dead_code)]
-struct EinsumBench<R: Runtime> {
+struct EinsumBench<R: Runtime, E: CubePrimitive + Numeric> {
     notation: &'static str,
     shapes: Vec<Vec<usize>>,
     strategy: ContractionStrategy,
     device: R::Device,
     client: ComputeClient<R>,
+    _phantom: std::marker::PhantomData<E>,
 }
 
-impl<R: Runtime> Benchmark for EinsumBench<R> {
+impl<R: Runtime, E: CubePrimitive + Numeric> Benchmark for EinsumBench<R, E> {
     type Input = (Vec<TensorHandle<R>>, TensorHandle<R>);
     type Output = ();
 
     fn prepare(&self) -> Self::Input {
         let client = R::client(&self.device);
-        let dtype = f32::as_type_native_unchecked();
+        let dtype = E::as_type_native_unchecked();
 
         // Create input tensors
         let inputs: Vec<TensorHandle<R>> = self.shapes.iter().map(|shape| {
             let tensor = TensorHandle::empty(&client, shape.clone(), dtype);
+            // Use f32 for random generation, converted internally
             random_uniform(&client, 0.0f32, 1.0f32, tensor.as_ref(), dtype).unwrap();
             tensor
         }).collect();
@@ -54,7 +59,7 @@ impl<R: Runtime> Benchmark for EinsumBench<R> {
             validate_shapes: false,
         };
 
-        einsum::einsum::<R, f32>(
+        einsum::einsum::<R, E>(
             &self.client,
             self.notation,
             &input_refs,
@@ -68,9 +73,11 @@ impl<R: Runtime> Benchmark for EinsumBench<R> {
         let shape_str: Vec<String> = self.shapes.iter()
             .map(|s| format!("{:?}", s))
             .collect();
+        let type_name = std::any::type_name::<E>().split("::").last().unwrap_or("?");
         format!(
-            "{}-einsum-{}-shapes[{}]-{:?}",
+            "{}-einsum-{}-{}-shapes[{}]-{:?}",
             R::name(&client),
+            type_name,
             self.notation.replace(",", "_").replace("->", "_to_"),
             shape_str.join(","),
             self.strategy
@@ -129,20 +136,11 @@ fn compute_output_shape(notation: &str, shapes: &[Vec<usize>]) -> Vec<usize> {
     }
 }
 
-/// Estimates FLOPs for an einsum operation (correct general formula).
+/// Estimates FLOPs for an einsum operation.
 ///
-/// Explanation:
-///  - Let `inputs` be the input subscripts, `output` the output subscripts.
-///  - Let `O` be the product of sizes of output indices.
-///  - Let `S` be the product of sizes of summation (contracted) indices (indices present in inputs but not in output).
-///  - Let `A` be the number of input tensors.
-///
-/// For each output element we compute `product_S` summands; each summand requires `(A - 1)` multiplies
-/// (to multiply A inputs together), and summing across the `product_S` summands uses `product_S - 1` adds.
-/// Therefore:
-///   multiplies = (A - 1) * (O * S)
-///   adds       = if S > 0 { (S - 1) * O } else { 0 }
-///   flops      = multiplies + adds
+/// For binary operations (2 inputs), uses the standard matmul formula: 2*M*K*N.
+/// For chain contractions (3+ inputs), estimates pairwise contraction costs
+/// since actual execution is done pairwise, not as a single giant contraction.
 fn estimate_flops(notation: &str, shapes: &[Vec<usize>]) -> u64 {
     use std::collections::HashMap;
 
@@ -150,10 +148,10 @@ fn estimate_flops(notation: &str, shapes: &[Vec<usize>]) -> u64 {
     let inputs_str = parts[0];
     let output_str = if parts.len() == 2 { parts[1] } else { "" };
 
-    // Build dimension map (same as compute_output_shape)
-    let mut dim_map: HashMap<char, usize> = HashMap::new();
     let input_subscripts: Vec<&str> = inputs_str.split(',').collect();
 
+    // Build dimension map
+    let mut dim_map: HashMap<char, usize> = HashMap::new();
     for (i, subscript) in input_subscripts.iter().enumerate() {
         if i >= shapes.len() {
             break;
@@ -165,75 +163,94 @@ fn estimate_flops(notation: &str, shapes: &[Vec<usize>]) -> u64 {
         }
     }
 
-    // Collect all indices appearing in inputs
-    let mut all_indices = Vec::new();
-    for sub in &input_subscripts {
-        for c in sub.chars().filter(|c| c.is_alphabetic()) {
-            if !all_indices.contains(&c) {
-                all_indices.push(c);
-            }
+    // For 2 inputs (standard case), use precise formula
+    if input_subscripts.len() == 2 {
+        let output_indices: Vec<char> = output_str.chars().filter(|c| c.is_alphabetic()).collect();
+
+        // Find contracted indices
+        let set_a: std::collections::HashSet<char> = input_subscripts[0].chars().filter(|c| c.is_alphabetic()).collect();
+        let set_b: std::collections::HashSet<char> = input_subscripts[1].chars().filter(|c| c.is_alphabetic()).collect();
+        let output_set: std::collections::HashSet<char> = output_indices.iter().copied().collect();
+
+        let contracted: Vec<char> = set_a.intersection(&set_b)
+            .filter(|c| !output_set.contains(c))
+            .copied()
+            .collect();
+
+        // FLOPs = 2 * M * K * N where K is product of contracted dims
+        let m: u64 = set_a.difference(&set_b)
+            .filter(|c| output_set.contains(c))
+            .map(|c| dim_map.get(c).copied().unwrap_or(1) as u64)
+            .product::<u64>();
+        let m = if m == 0 { 1 } else { m };
+
+        let n: u64 = set_b.difference(&set_a)
+            .filter(|c| output_set.contains(c))
+            .map(|c| dim_map.get(c).copied().unwrap_or(1) as u64)
+            .product::<u64>();
+        let n = if n == 0 { 1 } else { n };
+
+        let k: u64 = contracted.iter()
+            .map(|c| dim_map.get(c).copied().unwrap_or(1) as u64)
+            .product::<u64>();
+        let k = if k == 0 { 1 } else { k };
+
+        // Include batch dimensions
+        let batch: u64 = output_indices.iter()
+            .filter(|c| set_a.contains(c) && set_b.contains(c))
+            .map(|c| dim_map.get(c).copied().unwrap_or(1) as u64)
+            .product::<u64>();
+        let batch = if batch == 0 { 1 } else { batch };
+
+        return 2 * batch * m * k * n;
+    }
+
+    // For 3+ inputs (chain contractions), estimate pairwise costs
+    // This is approximate but much more accurate than the naive formula
+    if input_subscripts.len() >= 3 {
+        let mut total_flops: u64 = 0;
+
+        // Estimate each pairwise contraction
+        // For ij,jk,kl->il: (ij,jk)->ik costs 2*i*j*k, then (ik,kl)->il costs 2*i*k*l
+        for i in 0..input_subscripts.len() - 1 {
+            let sub_a = input_subscripts[i];
+            let sub_b = input_subscripts[i + 1];
+
+            let set_a: std::collections::HashSet<char> = sub_a.chars().filter(|c| c.is_alphabetic()).collect();
+            let set_b: std::collections::HashSet<char> = sub_b.chars().filter(|c| c.is_alphabetic()).collect();
+
+            // Contracted index between adjacent tensors
+            let contracted: Vec<char> = set_a.intersection(&set_b).copied().collect();
+
+            let m: u64 = set_a.difference(&set_b)
+                .map(|c| dim_map.get(c).copied().unwrap_or(1) as u64)
+                .product::<u64>();
+            let m = if m == 0 { 1 } else { m };
+
+            let n: u64 = set_b.difference(&set_a)
+                .map(|c| dim_map.get(c).copied().unwrap_or(1) as u64)
+                .product::<u64>();
+            let n = if n == 0 { 1 } else { n };
+
+            let k: u64 = contracted.iter()
+                .map(|c| dim_map.get(c).copied().unwrap_or(1) as u64)
+                .product::<u64>();
+            let k = if k == 0 { 1 } else { k };
+
+            total_flops += 2 * m * k * n;
         }
+
+        return total_flops;
     }
 
-    // Output indices set
-    let output_indices: Vec<char> = output_str.chars().filter(|c| c.is_alphabetic()).collect();
-
-    // Summation indices = all_indices \ output_indices
-    let summation_indices: Vec<char> = all_indices
-        .iter()
-        .copied()
-        .filter(|c| !output_indices.contains(c))
-        .collect();
-
-    // Compute products (use u128 to avoid overflow for large dims)
-    let mut product_o: u128 = 1;
-    for c in &output_indices {
-        if let Some(&d) = dim_map.get(c) {
-            product_o = product_o.saturating_mul(d as u128);
-        } else {
-            // missing dim info -> assume 1
-            product_o = product_o.saturating_mul(1);
-        }
-    }
-
-    let mut product_s: u128 = 1;
-    for c in &summation_indices {
-        if let Some(&d) = dim_map.get(c) {
-            product_s = product_s.saturating_mul(d as u128);
-        } else {
-            product_s = product_s.saturating_mul(1);
-        }
-    }
-
-    let num_inputs = input_subscripts.len() as u128;
-    let product_all = product_o.saturating_mul(product_s);
-
-    // multiplies
-    let multiplies = if num_inputs >= 1 {
-        (num_inputs - 1).saturating_mul(product_all)
-    } else {
-        0u128
-    };
-
-    // adds
-    let adds = if product_s > 0 {
-        product_o.saturating_mul(product_s.saturating_sub(1))
-    } else {
-        0u128
-    };
-
-    let flops = multiplies.saturating_add(adds);
-
-    // clamp to u64 (if unrealistic dimensions overflow, cap at u64::MAX)
-    if flops > u64::MAX as u128 {
-        u64::MAX
-    } else {
-        flops as u64
-    }
+    // Single input (reduction/transpose) - minimal compute
+    shapes.get(0)
+        .map(|s| s.iter().map(|&d| d as u64).product::<u64>())
+        .unwrap_or(0)
 }
 
 /// Runs a single einsum benchmark and reports both kernel TFLOPS and system timing.
-fn run_one<R: Runtime>(
+fn run_one<R: Runtime, E: CubePrimitive + Numeric + 'static>(
     device: R::Device,
     notation: &'static str,
     shapes: Vec<Vec<usize>>,
@@ -241,36 +258,35 @@ fn run_one<R: Runtime>(
 ) -> Result<(BenchmarkDurations, f64), String> {
     let client = R::client(&device);
 
-    let bench = EinsumBench {
+    let bench = EinsumBench::<R, E> {
         notation,
         shapes: shapes.clone(),
         strategy,
         client: client.clone(),
         device: device.clone(),
+        _phantom: std::marker::PhantomData,
     };
 
-    println!("Einsum: {} with shapes {:?}", notation, shapes);
+    let type_name = std::any::type_name::<E>().split("::").last().unwrap_or("?");
+    println!("Einsum: {} with shapes {:?} [{}]", notation, shapes, type_name);
     println!("{}", bench.name());
 
     // -------------------------
     // Warmup
     // -------------------------
     let warm_args = bench.prepare();
-    bench.execute(warm_args);
+    let _ = bench.execute(warm_args);
     bench.sync();
 
     // -------------------------
     // Kernel profiling
     // -------------------------
     let profile_args = bench.prepare();
-    let profile_duration = bench.profile(profile_args.clone());
+    let profile_duration = bench.profile(profile_args)
+        .map_err(|e| format!("profiling failed: {:?}", e))?;
 
-
-let profile_duration = bench.profile(profile_args)
-    .map_err(|e| format!("profiling failed: {:?}", e))?;
-
-let ticks = future::block_on(profile_duration.resolve());
-let kernel_secs = ticks.duration().as_secs_f64();
+    let ticks = future::block_on(profile_duration.resolve());
+    let kernel_secs = ticks.duration().as_secs_f64();
 
     // -------------------------
     // System timing
@@ -290,10 +306,11 @@ let kernel_secs = ticks.duration().as_secs_f64();
     }
 }
 #[allow(unused)]
-fn bench_matmul<R: Runtime>(device: R::Device) {
+fn bench_matmul<R: Runtime, E: CubePrimitive + Numeric + 'static>(device: R::Device) {
     println!("\n=== Matrix Multiplication (Fast Path) ===");
-    for (m, k, n) in [(512, 512, 512), (1024, 1024, 1024), (2048, 2048, 2048)] {
-        let _ = run_one::<R>(
+    // Use larger sizes for better GPU utilization
+    for (m, k, n) in [(2048, 2048, 2048), (4096, 4096, 4096)] {
+        let _ = run_one::<R, E>(
             device.clone(),
             "ij,jk->ik",
             vec![vec![m, k], vec![k, n]],
@@ -303,10 +320,11 @@ fn bench_matmul<R: Runtime>(device: R::Device) {
 }
 
 #[allow(unused)]
-fn bench_batched_matmul<R: Runtime>(device: R::Device) {
+fn bench_batched_matmul<R: Runtime, E: CubePrimitive + Numeric + 'static>(device: R::Device) {
     println!("\n=== Batched Matrix Multiplication (Fast Path) ===");
-    for (b, m, k, n) in [(8, 512, 512, 512), (16, 256, 256, 256), (32, 128, 128, 128)] {
-        let _ = run_one::<R>(
+    // Larger batches with reasonable matrix sizes
+    for (b, m, k, n) in [(16, 512, 512, 512), (64, 256, 256, 256)] {
+        let _ = run_one::<R, E>(
             device.clone(),
             "bij,bjk->bik",
             vec![vec![b, m, k], vec![b, k, n]],
@@ -316,108 +334,313 @@ fn bench_batched_matmul<R: Runtime>(device: R::Device) {
 }
 
 #[allow(unused)]
-fn bench_chain_contraction<R: Runtime>(device: R::Device) {
+fn bench_chain_contraction<R: Runtime, E: CubePrimitive + Numeric + 'static>(device: R::Device) {
     println!("\n=== Chain Contraction (Multi-Step) ===");
 
     // 3-tensor chain: A @ B @ C
-    let _ = run_one::<R>(
+    let _ = run_one::<R, E>(
         device.clone(),
         "ij,jk,kl->il",
-        vec![vec![256, 512], vec![512, 256], vec![256, 128]],
+        vec![vec![512, 1024], vec![1024, 512], vec![512, 256]],
         ContractionStrategy::Auto,
     );
 
-    // Compare greedy vs optimal
+    // Compare greedy vs optimal with skewed sizes
     println!("\n--- Greedy vs Optimal Path ---");
-    let _ = run_one::<R>(
+    let _ = run_one::<R, E>(
         device.clone(),
         "ij,jk,kl->il",
-        vec![vec![10, 100], vec![100, 1000], vec![1000, 10]],
+        vec![vec![32, 512], vec![512, 2048], vec![2048, 32]],
         ContractionStrategy::Greedy,
     );
-    let _ = run_one::<R>(
+    let _ = run_one::<R, E>(
         device.clone(),
         "ij,jk,kl->il",
-        vec![vec![10, 100], vec![100, 1000], vec![1000, 10]],
+        vec![vec![32, 512], vec![512, 2048], vec![2048, 32]],
         ContractionStrategy::Optimal,
     );
 }
 
 #[allow(unused)]
-fn bench_reductions<R: Runtime>(device: R::Device) {
+fn bench_reductions<R: Runtime, E: CubePrimitive + Numeric + 'static>(device: R::Device) {
     println!("\n=== Reductions (Fast Path) ===");
 
     // Sum all elements
-    let _ = run_one::<R>(
+    let _ = run_one::<R, E>(
         device.clone(),
         "ij->",
-        vec![vec![1024, 1024]],
+        vec![vec![2048, 2048]],
         ContractionStrategy::Auto,
     );
 
     // Sum along axis
-    let _ = run_one::<R>(
+    let _ = run_one::<R, E>(
         device.clone(),
         "ij->i",
-        vec![vec![1024, 1024]],
+        vec![vec![2048, 2048]],
         ContractionStrategy::Auto,
     );
 
     // Trace
-    let _ = run_one::<R>(
+    let _ = run_one::<R, E>(
         device.clone(),
         "ii->",
-        vec![vec![1024, 1024]],
+        vec![vec![2048, 2048]],
         ContractionStrategy::Auto,
     );
 }
 
 #[allow(unused)]
-fn bench_elementwise<R: Runtime>(device: R::Device) {
+fn bench_elementwise<R: Runtime, E: CubePrimitive + Numeric + 'static>(device: R::Device) {
     println!("\n=== Element-wise Operations ===");
 
     // Hadamard product
-    let _ = run_one::<R>(
+    let _ = run_one::<R, E>(
         device.clone(),
         "ij,ij->ij",
-        vec![vec![1024, 1024], vec![1024, 1024]],
+        vec![vec![2048, 2048], vec![2048, 2048]],
         ContractionStrategy::Auto,
     );
 
     // Outer product
-    let _ = run_one::<R>(
+    let _ = run_one::<R, E>(
         device.clone(),
         "i,j->ij",
-        vec![vec![1024], vec![1024]],
+        vec![vec![2048], vec![2048]],
         ContractionStrategy::Auto,
     );
 
     // Dot product
-    let _ = run_one::<R>(
+    let _ = run_one::<R, E>(
         device.clone(),
         "i,i->",
-        vec![vec![1024 * 1024], vec![1024 * 1024]],
+        vec![vec![4 * 1024 * 1024], vec![4 * 1024 * 1024]],
         ContractionStrategy::Auto,
     );
 }
 
 #[allow(unused)]
-fn bench_attention_pattern<R: Runtime>(device: R::Device) {
+fn bench_attention_pattern<R: Runtime, E: CubePrimitive + Numeric + 'static>(device: R::Device) {
     println!("\n=== Attention Patterns ===");
 
     // Attention scores: Q @ K^T
-    let _ = run_one::<R>(
+    let _ = run_one::<R, E>(
         device.clone(),
         "bhqd,bhkd->bhqk",
-        vec![vec![8, 12, 512, 64], vec![8, 12, 512, 64]],
+        vec![vec![16, 12, 512, 64], vec![16, 12, 512, 64]],
         ContractionStrategy::Auto,
     );
 
     // Attention output: scores @ V
-    let _ = run_one::<R>(
+    let _ = run_one::<R, E>(
         device.clone(),
         "bhqk,bhkd->bhqd",
-        vec![vec![8, 12, 512, 512], vec![8, 12, 512, 64]],
+        vec![vec![16, 12, 512, 512], vec![16, 12, 512, 64]],
+        ContractionStrategy::Auto,
+    );
+}
+
+#[allow(unused)]
+fn bench_large_attention<R: Runtime, E: CubePrimitive + Numeric + 'static>(device: R::Device) {
+    println!("\n=== Large Attention Patterns (Transformer Scale) ===");
+
+    // Realistic GPT-2 scale: batch=16, heads=16, seq=1024, dim=64
+    let _ = run_one::<R, E>(
+        device.clone(),
+        "bhqd,bhkd->bhqk",
+        vec![vec![16, 16, 1024, 64], vec![16, 16, 1024, 64]],
+        ContractionStrategy::Auto,
+    );
+
+    // Wide attention: batch=8, heads=32, seq=512, dim=128
+    let _ = run_one::<R, E>(
+        device.clone(),
+        "bhqd,bhkd->bhqk",
+        vec![vec![8, 32, 512, 128], vec![8, 32, 512, 128]],
+        ContractionStrategy::Auto,
+    );
+}
+
+// ============================================================================
+// NOVEL EINSUM PATTERNS - True power of Einstein notation
+// ============================================================================
+
+#[allow(unused)]
+fn bench_tensor_network<R: Runtime, E: CubePrimitive + Numeric + 'static>(device: R::Device) {
+    println!("\n=== Tensor Network Contractions ===");
+
+    // Batched tensor contraction: batch index shared
+    let _ = run_one::<R, E>(
+        device.clone(),
+        "bijk,bkjl->bil",
+        vec![vec![16, 64, 128, 64], vec![16, 64, 128, 64]],
+        ContractionStrategy::Auto,
+    );
+
+    // Multi-head style tensor contraction
+    let _ = run_one::<R, E>(
+        device.clone(),
+        "bhij,bhjk->bhik",
+        vec![vec![32, 8, 256, 128], vec![32, 8, 128, 256]],
+        ContractionStrategy::Auto,
+    );
+}
+
+#[allow(unused)]
+fn bench_bilinear_forms<R: Runtime, E: CubePrimitive + Numeric + 'static>(device: R::Device) {
+    println!("\n=== Bilinear Forms & Gram Matrices ===");
+
+    // Gram matrix computation: X X^T (kernel matrix, covariance)
+    let _ = run_one::<R, E>(
+        device.clone(),
+        "ik,jk->ij",
+        vec![vec![1024, 512], vec![1024, 512]],
+        ContractionStrategy::Auto,
+    );
+
+    // Batched Gram: feature covariance per batch
+    let _ = run_one::<R, E>(
+        device.clone(),
+        "bik,bjk->bij",
+        vec![vec![32, 256, 128], vec![32, 256, 128]],
+        ContractionStrategy::Auto,
+    );
+
+    // Inner product matrix: X^T Y (cross-covariance)
+    let _ = run_one::<R, E>(
+        device.clone(),
+        "ki,kj->ij",
+        vec![vec![512, 1024], vec![512, 1024]],
+        ContractionStrategy::Auto,
+    );
+}
+
+#[allow(unused)]
+fn bench_physics_patterns<R: Runtime, E: CubePrimitive + Numeric + 'static>(device: R::Device) {
+    println!("\n=== Physics-Inspired Patterns ===");
+
+    // Tensor double contraction (like : operator) - smaller to avoid dispatch limits
+    let _ = run_one::<R, E>(
+        device.clone(),
+        "abcd,abcd->",
+        vec![vec![32, 32, 32, 32], vec![32, 32, 32, 32]],
+        ContractionStrategy::Auto,
+    );
+
+    // Batched tensor hadamard + sum - smaller to avoid dispatch limits
+    let _ = run_one::<R, E>(
+        device.clone(),
+        "bijkl,bijkl->b",
+        vec![vec![16, 16, 16, 16, 16], vec![16, 16, 16, 16, 16]],
+        ContractionStrategy::Auto,
+    );
+}
+
+#[allow(unused)]
+fn bench_ml_patterns<R: Runtime, E: CubePrimitive + Numeric + 'static>(device: R::Device) {
+    println!("\n=== Machine Learning Patterns ===");
+
+    // Graph neural network: adjacency @ features
+    // A[n,n] @ X[n,d] -> out[n,d]
+    let _ = run_one::<R, E>(
+        device.clone(),
+        "nm,md->nd",
+        vec![vec![4096, 4096], vec![4096, 64]],
+        ContractionStrategy::Auto,
+    );
+
+    // Einsum attention variant (Q @ K^T batched)
+    let _ = run_one::<R, E>(
+        device.clone(),
+        "bhsd,bhrd->bhsr",
+        vec![vec![32, 8, 256, 64], vec![32, 8, 256, 64]],
+        ContractionStrategy::Auto,
+    );
+
+    // Feature cross-correlation (channel mixing)
+    let _ = run_one::<R, E>(
+        device.clone(),
+        "bchw,bdhw->bcd",
+        vec![vec![16, 64, 64, 64], vec![16, 128, 64, 64]],
+        ContractionStrategy::Auto,
+    );
+}
+
+#[allow(unused)]
+fn bench_permutation_heavy<R: Runtime, E: CubePrimitive + Numeric + 'static>(device: R::Device) {
+    println!("\n=== Permutation & Diagonal Patterns ===");
+
+    // Transpose (2D)
+    let _ = run_one::<R, E>(
+        device.clone(),
+        "ij->ji",
+        vec![vec![2048, 2048]],
+        ContractionStrategy::Auto,
+    );
+
+    // Trace: diagonal sum
+    let _ = run_one::<R, E>(
+        device.clone(),
+        "ii->",
+        vec![vec![2048, 2048]],
+        ContractionStrategy::Auto,
+    );
+
+    // Batch diagonal extraction
+    let _ = run_one::<R, E>(
+        device.clone(),
+        "bii->bi",
+        vec![vec![64, 512, 512]],
+        ContractionStrategy::Auto,
+    );
+}
+
+#[allow(unused)]
+fn bench_broadcasting<R: Runtime, E: CubePrimitive + Numeric + 'static>(device: R::Device) {
+    println!("\n=== Broadcasting Patterns ===");
+
+    // Broadcast vector to matrix: ij,j->ij
+    let _ = run_one::<R, E>(
+        device.clone(),
+        "ij,j->ij",
+        vec![vec![2048, 2048], vec![2048]],
+        ContractionStrategy::Auto,
+    );
+
+    // Broadcast scalar to batch: b,->b (element-wise with scalar)
+    let _ = run_one::<R, E>(
+        device.clone(),
+        "bi,i->bi",
+        vec![vec![256, 2048], vec![2048]],
+        ContractionStrategy::Auto,
+    );
+}
+
+#[allow(unused)]
+fn bench_complex_networks<R: Runtime, E: CubePrimitive + Numeric + 'static>(device: R::Device) {
+    println!("\n=== Complex Contractions ===");
+
+    // Batched contraction with two contracted indices
+    let _ = run_one::<R, E>(
+        device.clone(),
+        "bijkl,bjklm->bim",
+        vec![vec![8, 32, 64, 64, 32], vec![8, 64, 64, 32, 32]],
+        ContractionStrategy::Auto,
+    );
+
+    // Outer product (no contraction)
+    let _ = run_one::<R, E>(
+        device.clone(),
+        "i,j->ij",
+        vec![vec![2048], vec![2048]],
+        ContractionStrategy::Auto,
+    );
+
+    // Large matmul with unusual layout
+    let _ = run_one::<R, E>(
+        device.clone(),
+        "ik,kj->ij",
+        vec![vec![2048, 1024], vec![1024, 4096]],
         ContractionStrategy::Auto,
     );
 }
@@ -426,18 +649,67 @@ fn bench_attention_pattern<R: Runtime>(device: R::Device) {
 fn run_all_benches<R: Runtime>() {
     let device = R::Device::default();
 
-    bench_matmul::<R>(device.clone());
-    bench_batched_matmul::<R>(device.clone());
-    bench_chain_contraction::<R>(device.clone());
-    bench_reductions::<R>(device.clone());
-    bench_elementwise::<R>(device.clone());
-    bench_attention_pattern::<R>(device.clone());
+    println!("╔══════════════════════════════════════════════════════════════╗");
+    println!("║              CubeK Einsum Benchmarks                         ║");
+    println!("║    Showcasing novel tensor contraction patterns              ║");
+    println!("╚══════════════════════════════════════════════════════════════╝\n");
+
+    // =========================================================================
+    // f32 BENCHMARKS
+    // =========================================================================
+    println!("\n╔══════════════════════════════════════════════════════════════╗");
+    println!("║                    f32 Benchmarks                            ║");
+    println!("╚══════════════════════════════════════════════════════════════╝");
+
+    // Core matmul patterns
+    bench_matmul::<R, f32>(device.clone());
+    bench_batched_matmul::<R, f32>(device.clone());
+    bench_attention_pattern::<R, f32>(device.clone());
+    bench_large_attention::<R, f32>(device.clone());
+
+    // Novel patterns
+    bench_tensor_network::<R, f32>(device.clone());
+    bench_bilinear_forms::<R, f32>(device.clone());
+    bench_ml_patterns::<R, f32>(device.clone());
+
+    // =========================================================================
+    // f16 BENCHMARKS (Tensor Cores on supported hardware)
+    // =========================================================================
+    println!("\n╔══════════════════════════════════════════════════════════════╗");
+    println!("║              f16 Benchmarks (Tensor Cores)                   ║");
+    println!("╚══════════════════════════════════════════════════════════════╝");
+
+    // Core matmul with f16 - should see ~4x speedup with tensor cores
+    bench_matmul::<R, f16>(device.clone());
+    bench_batched_matmul::<R, f16>(device.clone());
+    bench_attention_pattern::<R, f16>(device.clone());
+    bench_large_attention::<R, f16>(device.clone());
+
+    // Novel patterns with f16
+    bench_tensor_network::<R, f16>(device.clone());
+    bench_bilinear_forms::<R, f16>(device.clone());
+    bench_ml_patterns::<R, f16>(device.clone());
+
+    // =========================================================================
+    // ADDITIONAL PATTERNS (f32 only for now)
+    // =========================================================================
+    println!("\n╔══════════════════════════════════════════════════════════════╗");
+    println!("║                  Additional Patterns (f32)                   ║");
+    println!("╚══════════════════════════════════════════════════════════════╝");
+
+    bench_chain_contraction::<R, f32>(device.clone());
+    bench_reductions::<R, f32>(device.clone());
+    bench_elementwise::<R, f32>(device.clone());
+    bench_permutation_heavy::<R, f32>(device.clone());
+    bench_broadcasting::<R, f32>(device.clone());
+    bench_complex_networks::<R, f32>(device.clone());
+    bench_physics_patterns::<R, f32>(device.clone());
 }
 
 fn main() {
-    println!("===========================================");
-    println!("         CubeK Einsum Benchmarks          ");
-    println!("===========================================\n");
+    #[cfg(feature = "cuda")]
+    run_all_benches::<cubecl::cuda::CudaRuntime>();
 
-    run_all_benches::<cubecl::TestRuntime>();
+    #[cfg(feature = "wgpu")]
+    run_all_benches::<cubecl::wgpu::WgpuRuntime>();
 }

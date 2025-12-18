@@ -70,7 +70,7 @@ fn outer_product_kernel<E: Numeric>(
     rhs_size: u32,
     #[define(E)] _dtype: StorageType,
 ) {
-    // Each thread computes one element of the output
+    // 2D grid layout for outer product
     let i = CUBE_POS_X * TILE_SIZE + UNIT_POS_X;
     let j = CUBE_POS_Y * TILE_SIZE + UNIT_POS_Y;
 
@@ -78,8 +78,11 @@ fn outer_product_kernel<E: Numeric>(
         // Output index: row-major order where lhs indices come first
         let output_idx = i * rhs_size + j;
 
+        // Load values from input tensors
         let a = lhs[i];
         let b = rhs[j];
+
+        // Compute outer product: C[i,j] = A[i] * B[j]
         output[output_idx] = a * b;
     }
 }

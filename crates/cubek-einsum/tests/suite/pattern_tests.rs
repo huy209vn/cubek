@@ -83,3 +83,41 @@ fn test_no_pattern_complex() {
     let pattern = recognize_pattern(&notation);
     assert!(pattern.is_none());
 }
+
+#[test]
+fn test_recognize_matmul_different_indices() {
+    // nm,md->nd should be recognized as matmul (same structure as ij,jk->ik)
+    let notation = parse_einsum("nm,md->nd").unwrap();
+    let pattern = recognize_pattern(&notation);
+    assert!(matches!(pattern, Some(FastPath::Matmul { .. })),
+        "nm,md->nd should be Matmul, got {:?}", pattern);
+}
+
+#[test]
+fn test_recognize_gram_matrix() {
+    // ik,jk->ij is a Gram matrix (A @ B^T)
+    let notation = parse_einsum("ik,jk->ij").unwrap();
+    let pattern = recognize_pattern(&notation);
+    match pattern {
+        Some(FastPath::Matmul { transpose_a, transpose_b }) => {
+            // A is not transposed, B is transposed
+            assert!(!transpose_a, "A should not be transposed");
+            assert!(transpose_b, "B should be transposed for Gram matrix");
+        }
+        _ => panic!("ik,jk->ij should be Matmul pattern, got {:?}", pattern),
+    }
+}
+
+#[test]
+fn test_recognize_inner_product_matrix() {
+    // ki,kj->ij is A^T @ B
+    let notation = parse_einsum("ki,kj->ij").unwrap();
+    let pattern = recognize_pattern(&notation);
+    match pattern {
+        Some(FastPath::Matmul { transpose_a, transpose_b }) => {
+            assert!(transpose_a, "A should be transposed");
+            assert!(!transpose_b, "B should not be transposed");
+        }
+        _ => panic!("ki,kj->ij should be Matmul pattern, got {:?}", pattern),
+    }
+}

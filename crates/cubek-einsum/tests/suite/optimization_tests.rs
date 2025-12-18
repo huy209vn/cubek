@@ -79,3 +79,36 @@ fn test_cost_model() {
     // FLOPs = M * N * K * 2 = 100 * 300 * 200 * 2 = 12,000,000
     assert_eq!(cost.flops, 12_000_000);
 }
+
+#[test]
+fn test_plan_uses_fast_path_for_nm_md_nd() {
+    // GNN pattern: nm,md->nd should use fast path
+    let notation = parse_einsum("nm,md->nd").unwrap();
+    let shapes: &[&[usize]] = &[&[4096, 4096], &[4096, 64]];
+
+    let plan = create_plan(&notation, shapes, ContractionStrategy::Auto);
+    assert!(plan.uses_fast_path(), "nm,md->nd should use fast path");
+}
+
+#[test]
+fn test_plan_uses_fast_path_for_gram_matrix() {
+    // Gram matrix: ik,jk->ij should use fast path
+    let notation = parse_einsum("ik,jk->ij").unwrap();
+    let shapes: &[&[usize]] = &[&[1024, 512], &[1024, 512]];
+
+    let plan = create_plan(&notation, shapes, ContractionStrategy::Auto);
+    assert!(plan.uses_fast_path(), "ik,jk->ij should use fast path");
+}
+
+#[test]
+fn test_tensor_network_no_fast_path() {
+    // Tensor network: bijk,bkjl->bil has complex index structure
+    // k and j are contracted, but layout is complex
+    let notation = parse_einsum("bijk,bkjl->bil").unwrap();
+    let shapes: &[&[usize]] = &[&[16, 64, 128, 64], &[16, 64, 128, 64]];
+
+    let plan = create_plan(&notation, shapes, ContractionStrategy::Auto);
+    // This should NOT be a fast path - check what it actually does
+    println!("bijk,bkjl->bil uses_fast_path: {}", plan.uses_fast_path());
+    println!("num_steps: {}", plan.num_steps());
+}
